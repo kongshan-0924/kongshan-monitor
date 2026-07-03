@@ -22,6 +22,8 @@ pub const MAX_NETS: usize = 16;
 pub const MAX_CORES: usize = 128;
 /// 受监控服务数量上限。
 pub const MAX_SERVICES: usize = 20;
+/// 占用 Top 进程上报数量上限。
+pub const MAX_TOP_PROCS: usize = 10;
 
 // ---------------------------------------------------------------------------
 // 协议类型
@@ -85,6 +87,15 @@ pub struct ServiceStatus {
     pub active: bool,
 }
 
+/// 占用最高的进程(按 CPU 排序取前 N)。名称来自 /proc/[pid]/comm。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TopProc {
+    pub name: String,
+    pub cpu_pct: f64,
+    pub rss: u64,
+}
+
 /// 受监控进程数量上限。
 pub const MAX_WATCH_PROCS: usize = 12;
 
@@ -130,6 +141,16 @@ pub struct Metrics {
     /// 受监控 systemd 服务状态。
     #[serde(default)]
     pub services: Vec<ServiceStatus>,
+    /// CPU 占用最高的若干进程。
+    #[serde(default)]
+    pub top_procs: Vec<TopProc>,
+    /// TCP 连接分状态计数(可用时)。
+    #[serde(default)]
+    pub tcp_estab: Option<u32>,
+    #[serde(default)]
+    pub tcp_listen: Option<u32>,
+    #[serde(default)]
+    pub tcp_time_wait: Option<u32>,
 }
 
 /// agent → server 上行消息(强类型、拒绝未知字段)。
@@ -313,6 +334,17 @@ pub fn validate_and_clean_metrics(m: &mut Metrics) -> Result<(), &'static str> {
     for s in &mut m.services {
         s.name = clean_str(&s.name, 64);
     }
+    m.top_procs.truncate(MAX_TOP_PROCS);
+    for p in &mut m.top_procs {
+        p.name = clean_str(&p.name, 32);
+        p.cpu_pct = if p.cpu_pct.is_finite() { p.cpu_pct.clamp(0.0, 100.0) } else { 0.0 };
+        p.rss = p.rss.min(MAX_BYTES_VALUE);
+    }
+    for v in [&mut m.tcp_estab, &mut m.tcp_listen, &mut m.tcp_time_wait] {
+        if v.is_some_and(|c| c > 10_000_000) {
+            *v = None;
+        }
+    }
     Ok(())
 }
 
@@ -350,6 +382,10 @@ mod tests {
             procs_watch: vec![],
             cpu_per_core: vec![],
             services: vec![],
+            top_procs: vec![],
+            tcp_estab: None,
+            tcp_listen: None,
+            tcp_time_wait: None,
         }
     }
 

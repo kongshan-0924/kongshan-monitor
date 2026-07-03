@@ -40,7 +40,10 @@ function renderSysInfo(n, m) {
   dl.replaceChildren();
   const d = (m && m.detail) || {};
   const temp = d.cpu_temp_c != null ? d.cpu_temp_c.toFixed(1) + " ℃" : "无传感器";
-  const tcp = d.tcp_conns != null ? String(d.tcp_conns) : "-";
+  let tcp = d.tcp_conns != null ? String(d.tcp_conns) : "-";
+  if (d.tcp_estab != null) {
+    tcp += "(活动 " + d.tcp_estab + " / 监听 " + d.tcp_listen + " / 等待 " + d.tcp_time_wait + ")";
+  }
   const iops = (d.disk_read_iops != null)
     ? "读 " + d.disk_read_iops + " / 写 " + d.disk_write_iops : "-";
   const rows = [
@@ -113,6 +116,25 @@ function renderTables(detail) {
       item.appendChild(el("span", "core-val", val.toFixed(0) + "%"));
       cb.appendChild(item);
     });
+  }
+
+  // 进程占用 Top(按 CPU)
+  const tpcard = $("#topProcCard");
+  const tops = (detail && detail.top_procs) || [];
+  if (tpcard) {
+    tpcard.classList.toggle("hidden", tops.length === 0);
+    const tt = $("#topProcTbl");
+    tt.replaceChildren();
+    const tth = el("tr");
+    ["进程", "CPU", "内存(RSS)"].forEach((h) => tth.appendChild(el("th", null, h)));
+    tt.appendChild(tth);
+    for (const p of tops) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, p.name));
+      tr.appendChild(el("td", null, (p.cpu_pct || 0).toFixed(1) + "%"));
+      tr.appendChild(el("td", null, fmtBytes(p.rss || 0)));
+      tt.appendChild(tr);
+    }
   }
 
   // 服务状态(仅在 agent 配置了 watch_services 时有数据)

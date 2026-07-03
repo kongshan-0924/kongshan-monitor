@@ -4,9 +4,11 @@
 use crate::parsers::{
     cpu_percent, parse_cpu_per_core, parse_cpu_total, parse_diskstats, parse_loadavg,
     parse_meminfo, parse_mounts, parse_netdev, parse_os_release, parse_pid_comm, parse_pid_stat,
-    parse_tcp_count, parse_thermal_millideg, parse_uptime, rate_bps, CpuTimes, DiskStats,
+    parse_tcp_count, parse_tcp_states, parse_thermal_millideg, parse_uptime, rate_bps, CpuTimes,
+    DiskStats,
 };
-use outpost_common::{DiskUsage, HostInfo, Metrics, NetIf, ProcInfo, ServiceStatus};
+use outpost_common::{DiskUsage, HostInfo, Metrics, NetIf, ProcInfo, ServiceStatus, TopProc};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -40,12 +42,19 @@ pub struct Sampler {
     prev: Option<Prev>,
     watch: Vec<String>,
     watch_services: Vec<String>,
+    /// 上次各 pid 累计 CPU jiffies(用于 Top 进程 CPU%)。
+    prev_pids: HashMap<u32, u64>,
 }
 
 impl Sampler {
     #[must_use]
     pub fn new() -> Self {
-        Self { prev: None, watch: Vec::new(), watch_services: Vec::new() }
+        Self {
+            prev: None,
+            watch: Vec::new(),
+            watch_services: Vec::new(),
+            prev_pids: HashMap::new(),
+        }
     }
 
     /// 设置受监控进程列表(来自 agent 本地配置)。
@@ -80,6 +89,33 @@ impl Sampler {
                 active: states.get(i).map(String::as_str) == Some("active"),
             })
             .collect()
+    }
+
+    /// 扫描全部进程,按 CPU 占用取前 N(附 RSS)。返回 (top 列表, 各 pid 当前 jiffies)。
+    fn scan_top_processes(&self, cpu_total_delta: u64) -> (Vec<TopProc>, HashMap<u32, u64>) {
+        let mut cur: HashMap<u32, u64> = HashMap::new();
+        let mut procs: Vec<TopProc> = Vec::new();
+        let Ok(dir) = std::fs::read_dir("/proc") else { return (procs, cur) };
+        for entry in dir.flatten() {
+            let fname = entry.file_name();
+            let Some(name) = fname.to_str() else { continue };
+            let Ok(pid) = name.parse::<u32>() else { continue };
+            let Some(stat) = read_file(&format!("/proc/{pid}/stat")) else { continue };
+            let Some(comm) = parse_pid_comm(&stat) else { continue };
+            let Some((jiffies, rss_pages)) = parse_pid_stat(&stat) else { continue };
+            cur.insert(pid, jiffies);
+            let prev_j = self.prev_pids.get(&pid).copied().unwrap_or(jiffies);
+            procs.push(TopProc {
+                name: comm,
+                cpu_pct: proc_cpu_pct(jiffies.saturating_sub(prev_j), cpu_total_delta),
+                rss: rss_pages.saturating_mul(PAGE_SIZE),
+            });
+        }
+        procs.sort_by(|a, b| {
+            b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(Ordering::Equal).then(b.rss.cmp(&a.rss))
+        });
+        procs.truncate(outpost_common::MAX_TOP_PROCS);
+        (procs, cur)
     }
 
     /// 静态主机信息。
@@ -125,6 +161,11 @@ impl Sampler {
         let disk_now = read_file("/proc/diskstats").map(|s| parse_diskstats(&s)).unwrap_or_default();
         let cpu_total_now = cpu_now.map_or(0, |c| c.total);
         let proc_now = self.scan_processes();
+        // Top 进程 CPU% 需要与上次全局 CPU jiffies 的差
+        let cpu_delta_top = self.prev.as_ref().map_or(0, |p| cpu_total_now.saturating_sub(p.cpu_total));
+        let (top_procs, cur_pids) = self.scan_top_processes(cpu_delta_top);
+        self.prev_pids = cur_pids;
+        let (tcp_estab, tcp_listen, tcp_time_wait) = read_tcp_states();
 
         let (cpu_pct, nets, disk_read_bps, disk_write_bps, disk_read_iops, disk_write_iops, procs_watch, cpu_per_core) =
             match (&self.prev, cpu_now) {
@@ -226,6 +267,10 @@ impl Sampler {
             procs_watch,
             cpu_per_core,
             services: self.scan_services(),
+            top_procs,
+            tcp_estab,
+            tcp_listen,
+            tcp_time_wait,
         }
     }
 
@@ -306,6 +351,26 @@ fn read_tcp_conns() -> Option<u32> {
     match (v4, v6) {
         (None, None) => None,
         (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+    }
+}
+
+/// TCP 分状态计数(v4+v6 合计):(ESTABLISHED, LISTEN, TIME_WAIT)。
+fn read_tcp_states() -> (Option<u32>, Option<u32>, Option<u32>) {
+    let (mut e, mut l, mut t) = (0u32, 0u32, 0u32);
+    let mut got = false;
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Some(s) = read_file(path) {
+            got = true;
+            let (pe, pl, pt) = parse_tcp_states(&s);
+            e = e.saturating_add(pe);
+            l = l.saturating_add(pl);
+            t = t.saturating_add(pt);
+        }
+    }
+    if got {
+        (Some(e), Some(l), Some(t))
+    } else {
+        (None, None, None)
     }
 }
 

@@ -57,8 +57,7 @@ function opChart(container, opts) {
     const W = rect.width, H = rect.height;
     ctx.clearRect(0, 0, W, H);
 
-    const padL = 46, padR = 8, padT = 8, padB = 20;
-    const iw = W - padL - padR, ih = H - padT - padB;
+    const padR = 8, padT = 8, padB = 20;
     const lineCol = cssVar("--line"), mutedCol = cssVar("--muted");
     ctx.font = "10.5px -apple-system, sans-serif";
 
@@ -75,12 +74,19 @@ function opChart(container, opts) {
       if (hi <= 0) hi = 1;
       hi *= 1.12;
     }
+    const step = niceStep(hi - lo, 4);
+    // 动态左边距:容纳最宽的 Y 轴标签(防 "386 KiB/s" 之类被裁切)
+    let labelW = 0;
+    for (let v = lo; v <= hi + 1e-9; v += step) {
+      labelW = Math.max(labelW, ctx.measureText(yFmt(v)).width);
+    }
+    const padL = Math.max(44, Math.ceil(labelW) + 12);
+    const iw = W - padL - padR, ih = H - padT - padB;
     const t0 = ts[0], t1 = ts[ts.length - 1], tr = Math.max(1, t1 - t0);
     const xOf = (t) => padL + ((t - t0) / tr) * iw;
     const yOf = (v) => padT + ih - ((v - lo) / (hi - lo)) * ih;
 
     // 水平网格 + Y 刻度
-    const step = niceStep(hi - lo, 4);
     ctx.strokeStyle = lineCol;
     ctx.fillStyle = mutedCol;
     ctx.lineWidth = 1;

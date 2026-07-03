@@ -187,6 +187,22 @@ pub fn parse_tcp_count(s: &str) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
+/// 统计 /proc/net/tcp[6] 分状态计数:(ESTABLISHED 01, LISTEN 0A, TIME_WAIT 06)。
+/// 状态码为每行第 4 列(sl local rem st …)。
+#[must_use]
+pub fn parse_tcp_states(s: &str) -> (u32, u32, u32) {
+    let (mut estab, mut listen, mut tw) = (0u32, 0u32, 0u32);
+    for line in s.lines().skip(1) {
+        match line.split_whitespace().nth(3) {
+            Some("01") => estab = estab.saturating_add(1),
+            Some("0A") => listen = listen.saturating_add(1),
+            Some("06") => tw = tw.saturating_add(1),
+            _ => {}
+        }
+    }
+    (estab, listen, tw)
+}
+
 /// 解析热区温度文件(毫摄氏度 → 摄氏度)。范围外返回 None。
 #[must_use]
 pub fn parse_thermal_millideg(s: &str) -> Option<f64> {

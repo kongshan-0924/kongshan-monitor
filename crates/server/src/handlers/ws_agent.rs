@@ -92,6 +92,12 @@ fn build_detail(m: &outpost_common::Metrics) -> (String, i64, i64) {
         "services": m.services.iter().map(|s| json!({
             "name": s.name, "active": s.active,
         })).collect::<Vec<_>>(),
+        "top_procs": m.top_procs.iter().map(|p| json!({
+            "name": p.name, "cpu_pct": p.cpu_pct, "rss": p.rss,
+        })).collect::<Vec<_>>(),
+        "tcp_estab": m.tcp_estab,
+        "tcp_listen": m.tcp_listen,
+        "tcp_time_wait": m.tcp_time_wait,
     })
     .to_string();
     (detail, dt, du)

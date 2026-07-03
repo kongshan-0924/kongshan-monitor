@@ -580,7 +580,8 @@ mod tests {
             disk_write_bps: 0, nets: vec![], uptime_secs: 0, procs: 0,
             cpu_temp_c: Some(60.0), tcp_conns: Some(100),
             disk_read_iops: 0, disk_write_iops: 0, procs_watch: vec![],
-            cpu_per_core: vec![], services: vec![],
+            cpu_per_core: vec![], services: vec![], top_procs: vec![],
+            tcp_estab: None, tcp_listen: None, tcp_time_wait: None,
         }
     }
 

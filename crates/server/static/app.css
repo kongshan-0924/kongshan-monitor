@@ -239,7 +239,7 @@ input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transpare
 .charts2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 720px) { .charts2 { grid-template-columns: 1fr; } }
 /* 每核 CPU 条 */
-.core-bars { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; }
+.core-bars { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 18px; }
 .core-item { display: flex; align-items: center; gap: 8px; }
 .core-lbl { color: var(--muted); font-size: 11px; width: 26px; flex: none; font-variant-numeric: tabular-nums; }
 .core-track { flex: 1; height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
