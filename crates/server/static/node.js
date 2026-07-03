@@ -115,6 +115,26 @@ function renderTables(detail) {
     });
   }
 
+  // 服务状态(仅在 agent 配置了 watch_services 时有数据)
+  const scard = $("#svcCard");
+  const svcs = (detail && detail.services) || [];
+  if (scard) {
+    scard.classList.toggle("hidden", svcs.length === 0);
+    const st = $("#svcTbl");
+    st.replaceChildren();
+    const sh = el("tr");
+    ["服务单元", "状态"].forEach((h) => sh.appendChild(el("th", null, h)));
+    st.appendChild(sh);
+    for (const s of svcs) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, s.name));
+      const td = el("td");
+      td.appendChild(el("span", "spill " + (s.active ? "spill-on" : "spill-off"), s.active ? "运行中" : "未运行"));
+      tr.appendChild(td);
+      st.appendChild(tr);
+    }
+  }
+
   // 受监控进程(仅在 agent 配置了 watch_processes 时有数据)
   const pcard = $("#procCard");
   const watch = (detail && detail.procs_watch) || [];

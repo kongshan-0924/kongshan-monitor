@@ -6,7 +6,7 @@ use crate::parsers::{
     parse_meminfo, parse_mounts, parse_netdev, parse_os_release, parse_pid_comm, parse_pid_stat,
     parse_tcp_count, parse_thermal_millideg, parse_uptime, rate_bps, CpuTimes, DiskStats,
 };
-use outpost_common::{DiskUsage, HostInfo, Metrics, NetIf, ProcInfo};
+use outpost_common::{DiskUsage, HostInfo, Metrics, NetIf, ProcInfo, ServiceStatus};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -39,17 +39,47 @@ struct Prev {
 pub struct Sampler {
     prev: Option<Prev>,
     watch: Vec<String>,
+    watch_services: Vec<String>,
 }
 
 impl Sampler {
     #[must_use]
     pub fn new() -> Self {
-        Self { prev: None, watch: Vec::new() }
+        Self { prev: None, watch: Vec::new(), watch_services: Vec::new() }
     }
 
     /// 设置受监控进程列表(来自 agent 本地配置)。
     pub fn set_watch(&mut self, watch: Vec<String>) {
         self.watch = watch.into_iter().take(outpost_common::MAX_WATCH_PROCS).collect();
+    }
+
+    /// 设置受监控 systemd 服务列表(来自 agent 本地配置)。
+    pub fn set_watch_services(&mut self, services: Vec<String>) {
+        self.watch_services = services.into_iter().take(outpost_common::MAX_SERVICES).collect();
+    }
+
+    /// 只读查询各服务 active 状态:单次 `systemctl is-active <单元…>`(一行一状态)。
+    /// 绝不执行 start/stop/restart 等控制命令。单元名已在配置层严格校验。
+    fn scan_services(&self) -> Vec<ServiceStatus> {
+        if self.watch_services.is_empty() {
+            return Vec::new();
+        }
+        let output = std::process::Command::new("systemctl")
+            .arg("is-active")
+            .args(&self.watch_services)
+            .output();
+        let states: Vec<String> = match &output {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).lines().map(str::trim).map(str::to_string).collect(),
+            Err(_) => Vec::new(), // systemctl 不可用:按未知(非 active)上报
+        };
+        self.watch_services
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ServiceStatus {
+                name: n.clone(),
+                active: states.get(i).map(String::as_str) == Some("active"),
+            })
+            .collect()
     }
 
     /// 静态主机信息。
@@ -195,6 +225,7 @@ impl Sampler {
             disk_write_iops,
             procs_watch,
             cpu_per_core,
+            services: self.scan_services(),
         }
     }
 

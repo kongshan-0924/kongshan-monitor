@@ -20,6 +20,8 @@ pub const MAX_DISKS: usize = 16;
 pub const MAX_NETS: usize = 16;
 /// 每核 CPU 上报核数上限(超出截断,防超大机器消息膨胀)。
 pub const MAX_CORES: usize = 128;
+/// 受监控服务数量上限。
+pub const MAX_SERVICES: usize = 20;
 
 // ---------------------------------------------------------------------------
 // 协议类型
@@ -75,6 +77,14 @@ pub struct ProcInfo {
     pub rss: u64,
 }
 
+/// systemd 服务状态(单元名来自 agent 本地配置,绝不由服务端下发)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceStatus {
+    pub name: String,
+    pub active: bool,
+}
+
 /// 受监控进程数量上限。
 pub const MAX_WATCH_PROCS: usize = 12;
 
@@ -117,6 +127,9 @@ pub struct Metrics {
     /// 每核 CPU 使用率(%);核数超过上限时截断。
     #[serde(default)]
     pub cpu_per_core: Vec<f64>,
+    /// 受监控 systemd 服务状态。
+    #[serde(default)]
+    pub services: Vec<ServiceStatus>,
 }
 
 /// agent → server 上行消息(强类型、拒绝未知字段)。
@@ -296,6 +309,10 @@ pub fn validate_and_clean_metrics(m: &mut Metrics) -> Result<(), &'static str> {
     for c in &mut m.cpu_per_core {
         *c = if c.is_finite() { c.clamp(0.0, 100.0) } else { 0.0 };
     }
+    m.services.truncate(MAX_SERVICES);
+    for s in &mut m.services {
+        s.name = clean_str(&s.name, 64);
+    }
     Ok(())
 }
 
@@ -332,6 +349,7 @@ mod tests {
             disk_write_iops: 0,
             procs_watch: vec![],
             cpu_per_core: vec![],
+            services: vec![],
         }
     }
 

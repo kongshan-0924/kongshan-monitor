@@ -123,7 +123,9 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX 供可选的 systemd 服务状态探测(systemctl is-active 走本地 UNIX socket);
+# 仅当配置 watch_services 时才会用到,agent 无 capability、只读查询、不执行控制命令。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallFilter=@system-service

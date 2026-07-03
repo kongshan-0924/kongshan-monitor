@@ -19,6 +19,18 @@ pub struct AgentConfig {
     /// 按 /proc/[pid]/comm 精确匹配;最多 12 个。
     #[serde(default)]
     pub watch_processes: Vec<String>,
+    /// 要探测 active 状态的 systemd 服务单元名(**本地配置,服务端无法下发**)。
+    /// 仅只读查询 `systemctl is-active`,绝不执行控制命令;单元名严格校验。
+    #[serde(default)]
+    pub watch_services: Vec<String>,
+}
+
+/// systemd 单元名合法字符:字母数字与 `@ . _ - :`(禁止空格/斜杠/控制字符,防命令注入)。
+#[must_use]
+pub fn valid_unit_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'@' | b'.' | b'_' | b'-' | b':'))
 }
 
 fn default_interval() -> u32 {
@@ -73,6 +85,12 @@ impl AgentConfig {
         }
         if self.watch_processes.iter().any(|p| p.is_empty() || p.len() > 32) {
             return Err(ConfigError::Invalid("进程名长度需为 1..=32"));
+        }
+        if self.watch_services.len() > outpost_common::MAX_SERVICES {
+            return Err(ConfigError::Invalid("watch_services 最多 20 个"));
+        }
+        if self.watch_services.iter().any(|s| !valid_unit_name(s)) {
+            return Err(ConfigError::Invalid("systemd 单元名非法(仅限字母数字与 @._-:)"));
         }
         Ok(())
     }

@@ -135,6 +135,7 @@ async fn run(cfg: AgentConfig, token: String) -> ExitCode {
 
     let mut sampler = Sampler::new();
     sampler.set_watch(cfg.watch_processes.clone());
+    sampler.set_watch_services(cfg.watch_services.clone());
     let mut interval_secs = cfg.report_interval_secs;
     let mut backoff: u64 = 1;
     // 断线期间的采样缓冲(有界,丢最旧),重连后补传

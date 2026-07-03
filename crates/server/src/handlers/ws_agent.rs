@@ -89,6 +89,9 @@ fn build_detail(m: &outpost_common::Metrics) -> (String, i64, i64) {
             "name": p.name, "running": p.running, "count": p.count,
             "cpu_pct": p.cpu_pct, "rss": p.rss,
         })).collect::<Vec<_>>(),
+        "services": m.services.iter().map(|s| json!({
+            "name": s.name, "active": s.active,
+        })).collect::<Vec<_>>(),
     })
     .to_string();
     (detail, dt, du)
