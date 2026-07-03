@@ -137,7 +137,9 @@ ts_skew_secs = 300
 allow_private_targets = false
 EOF
 chown -R root:outpost "$ETC"
-chmod 0640 "$ETC/config.toml" "$ETC/pki/ca.key"
+chmod 0640 "$ETC/config.toml"
+chmod 0640 "$ETC/pki/server.key"   # 服务以 outpost 用户运行,需读服务端私钥
+chmod 0600 "$ETC/pki/ca.key"       # CA 私钥仅 root 可读
 
 # --- 创建管理员(密码经环境变量,不入 argv)---
 info "创建管理员账户"
