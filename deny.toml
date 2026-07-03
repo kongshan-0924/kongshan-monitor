@@ -1,0 +1,44 @@
+# cargo-deny 供应链策略(规范 6.5)
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # rsa(Marvin 时序攻击):仅作为 sqlx 可选 MySQL 路径残留于 Cargo.lock,
+  # 实际构建图不包含(cargo tree -i rsa 为空),二进制中不存在该代码。
+  { id = "RUSTSEC-2023-0071", reason = "not in build graph; sqlx optional mysql leftover in lockfile" },
+  # rustls-pemfile 停止维护(警告级):由 axum-server 传递引入,仅在启动时解析
+  # 本地受信证书文件;我们自己的代码已迁移到 rustls-pki-types。等待上游更新。
+  { id = "RUSTSEC-2025-0134", reason = "transitive via axum-server; parses local trusted files only" },
+]
+
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "OpenSSL",
+  "CDLA-Permissive-2.0",
+]
+
+# ring 的许可证表达式需要澄清(ISC 派生 + OpenSSL 部分)
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

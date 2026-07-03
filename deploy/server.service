@@ -1,0 +1,45 @@
+# /etc/systemd/system/outpost-server.service — 服务端(加固)
+[Unit]
+Description=Outpost monitoring dashboard server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=outpost
+Group=outpost
+Environment=OUTPOST_CONFIG=/etc/outpost/config.toml
+ExecStart=/usr/local/bin/outpost-server
+Restart=always
+RestartSec=5
+
+# --- 资源限制(512MB 小机型友好) ---
+MemoryMax=256M
+TasksMax=64
+
+# --- 安全加固 ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/outpost
+ReadOnlyPaths=/etc/outpost
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

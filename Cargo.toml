@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/common", "crates/server", "crates/agent"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+
+# 安全基线:全 workspace 禁 unsafe;攻击面上禁 panic 类写法(红线第 6 条,机器强制)
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

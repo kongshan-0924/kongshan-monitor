@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 初始化</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="setup">
+<main class="auth-wrap">
+  <form id="setupForm" class="card pad auth-card">
+    <div class="auth-brand"><span class="brand-dot big"></span></div>
+    <h2>首次初始化</h2>
+    <p class="subtle">创建管理员账户(系统没有任何内置账号)</p>
+    <label>用户名(3~32 位,字母数字与 _.-)
+      <input id="username" type="text" autocomplete="username" maxlength="32" required>
+    </label>
+    <label>密码(≥10 位,需含字母和数字)
+      <input id="password" type="password" autocomplete="new-password" maxlength="128" required>
+    </label>
+    <label>确认密码
+      <input id="password2" type="password" autocomplete="new-password" maxlength="128" required>
+    </label>
+    <button class="btn primary block" type="submit">创建并进入</button>
+    <div id="msg" class="msg err"></div>
+  </form>
+</main>
+<script src="/static/app.js"></script>
+<script src="/static/auth.js"></script>
+</body>
+</html>

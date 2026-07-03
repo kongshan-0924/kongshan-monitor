@@ -1,0 +1,6 @@
+# cargo-audit 豁免清单(理由与 deny.toml 保持一致,详见 SECURITY_AUDIT.md)
+[advisories]
+ignore = [
+  "RUSTSEC-2023-0071", # rsa:不在构建图(sqlx 可选 MySQL 残留于 lockfile)
+  "RUSTSEC-2025-0134", # rustls-pemfile unmaintained:axum-server 传递依赖,仅读本地受信文件
+]

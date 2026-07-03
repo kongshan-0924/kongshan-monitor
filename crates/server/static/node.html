@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 节点</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="node" data-auth="1">
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-dot"></span>Outpost 哨站</a>
+  <nav class="nav">
+    <a href="/">总览</a>
+    <a href="/compare">对比</a>
+    <a href="/alerts">告警<span id="navBadge" class="badge hidden">0</span></a>
+    <a href="/settings">设置</a>
+  </nav>
+  <div class="top-actions">
+    <button id="themeBtn" class="btn icon" title="切换浅色/深色">◐</button>
+    <button id="logoutBtn" class="btn ghost sm">退出</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="node-head">
+    <div>
+      <h2 id="nodeTitle">…</h2>
+      <div id="nodeSub" class="subtle"></div>
+    </div>
+    <div class="node-head-actions">
+      <button id="exportBtn" class="btn ghost sm">导出数据</button>
+      <button id="renameBtn" class="btn ghost sm">重命名</button>
+      <button id="regenBtn" class="btn ghost sm">重置密钥</button>
+      <button id="revokeBtn" class="btn warn sm">吊销 Token</button>
+      <button id="deleteBtn" class="btn danger sm">删除节点</button>
+    </div>
+  </div>
+
+  <section class="statrow" id="statRow"></section>
+
+  <div class="rangebar">
+    <span class="subtle">时间范围</span>
+    <div class="seg" id="rangeSeg">
+      <button data-secs="3600" class="active">1 小时</button>
+      <button data-secs="21600">6 小时</button>
+      <button data-secs="86400">24 小时</button>
+      <button data-secs="604800">7 天</button>
+      <button data-secs="2592000">30 天</button>
+    </div>
+  </div>
+
+  <section class="charts">
+    <div class="card chart-card"><h4>CPU 使用率</h4><div class="chart" id="cpuChart"></div></div>
+    <div class="card chart-card"><h4>内存</h4><div class="chart" id="memChart"></div></div>
+    <div class="card chart-card"><h4>网络速率</h4><div class="chart" id="netChart"></div></div>
+    <div class="card chart-card"><h4>磁盘 I/O</h4><div class="chart" id="ioChart"></div></div>
+    <div class="card chart-card"><h4>负载</h4><div class="chart" id="loadChart"></div></div>
+    <div class="card chart-card">
+      <h4>系统信息</h4>
+      <dl class="kv" id="sysInfo"></dl>
+    </div>
+  </section>
+
+  <section class="charts">
+    <div class="card"><h4>挂载点</h4><table class="tbl" id="diskTbl"></table></div>
+    <div class="card"><h4>网卡</h4><table class="tbl" id="netTbl"></table></div>
+  </section>
+
+  <section class="charts">
+    <div class="card hidden" id="procCard"><h4>受监控进程</h4><table class="tbl" id="procTbl"></table></div>
+  </section>
+</main>
+
+<dialog id="cmdDlg" class="dlg">
+  <div class="dlg-body">
+    <h3>新安装命令</h3>
+    <p class="hint">旧 token 已吊销。在目标服务器重新执行(30 分钟内有效、仅此一次显示):</p>
+    <pre id="newCmd" class="cmd"></pre>
+    <div class="dlg-actions">
+      <button id="copyNewCmd" type="button" class="btn primary">复制命令</button>
+      <button id="closeCmdDlg" type="button" class="btn ghost">完成</button>
+    </div>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+<script src="/static/chart.js"></script>
+<script src="/static/node.js"></script>
+</body>
+</html>

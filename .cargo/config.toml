@@ -1,0 +1,4 @@
+# sqlx 编译期查询校验所用的开发数据库(由 scripts/dev-db.sh 生成)。
+# sqlite 相对路径按 CARGO_MANIFEST_DIR 解析(crates/server/.dev/dev.db)。
+[env]
+DATABASE_URL = "sqlite:.dev/dev.db"

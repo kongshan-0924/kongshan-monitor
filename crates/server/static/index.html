@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 总览</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="dashboard" data-auth="1">
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-dot"></span>Outpost 哨站</a>
+  <nav class="nav">
+    <a href="/" class="active">总览</a>
+    <a href="/compare">对比</a>
+    <a href="/alerts">告警<span id="navBadge" class="badge hidden">0</span></a>
+    <a href="/settings">设置</a>
+  </nav>
+  <div class="top-actions">
+    <button id="addNodeBtn" class="btn primary sm">添加节点</button>
+    <button id="themeBtn" class="btn icon" title="切换浅色/深色">◐</button>
+    <button id="logoutBtn" class="btn ghost sm">退出</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="summary" id="summary"></section>
+
+  <div class="toolbar" id="toolbar">
+    <input id="search" type="search" placeholder="搜索名称 / 主机名 / 系统…" class="tb-search">
+    <select id="groupFilter" class="tb-sel"><option value="">全部分组</option></select>
+    <select id="sortBy" class="tb-sel">
+      <option value="status">按状态(告警/离线优先)</option>
+      <option value="name">按名称</option>
+      <option value="cpu">按 CPU</option>
+      <option value="mem">按内存</option>
+    </select>
+    <label class="tb-check"><input type="checkbox" id="selMode"> 批量</label>
+  </div>
+
+  <div class="batchbar hidden" id="batchbar">
+    <span id="selCount">已选 0</span>
+    <select id="batchGrp" class="tb-sel"><option value="">改分组为…</option></select>
+    <button id="batchSetGrp" class="btn ghost sm">应用分组</button>
+    <button id="batchRevoke" class="btn warn sm">批量吊销</button>
+    <button id="batchDelete" class="btn danger sm">批量删除</button>
+    <button id="selClear" class="btn ghost sm">取消选择</button>
+  </div>
+
+  <div id="empty" class="empty hidden">
+    <p>还没有节点。点击右上角「添加节点」,生成一条安装命令即可接入第一台服务器。</p>
+  </div>
+  <div id="grid" class="grid"></div>
+</main>
+
+<dialog id="addDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="addForm">
+    <h3>添加节点</h3>
+    <div id="addStep1">
+      <label>节点名称
+        <input id="nodeName" type="text" maxlength="64" required placeholder="例如:web-1">
+      </label>
+      <label>分组(可选)
+        <input id="nodeGrp" type="text" maxlength="32" placeholder="例如:生产">
+      </label>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>取消</button>
+        <button id="createBtn" value="default" class="btn primary" type="submit">创建并生成命令</button>
+      </div>
+    </div>
+    <div id="addStep2" class="hidden">
+      <p class="hint">在目标服务器以 root 执行以下命令(密钥 <b>30 分钟内有效、仅此一次显示</b>):</p>
+      <pre id="installCmd" class="cmd"></pre>
+      <p class="hint subtle">安全提示:命令会先下载 CA 证书并核对指纹,再经 TLS 获取安装脚本与二进制并校验 SHA-256。
+      如果希望先人工审阅,可单独下载 <code>/install.sh</code> 查看后再执行。</p>
+      <div class="dlg-actions">
+        <button id="copyCmd" type="button" class="btn primary">复制命令</button>
+        <button value="close" class="btn ghost">完成</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

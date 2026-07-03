@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 登录</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="login">
+<main class="auth-wrap">
+  <form id="loginForm" class="card pad auth-card">
+    <div class="auth-brand"><span class="brand-dot big"></span></div>
+    <h2>Outpost 哨站</h2>
+    <p class="subtle">私有服务器监控面板</p>
+    <label>用户名 <input id="username" type="text" autocomplete="username" maxlength="32" required></label>
+    <label>密码 <input id="password" type="password" autocomplete="current-password" maxlength="128" required></label>
+    <label id="codeLabel" class="hidden">两步验证码 / 恢复码
+      <input id="code" type="text" inputmode="numeric" maxlength="10" autocomplete="one-time-code" placeholder="000000">
+    </label>
+    <button class="btn primary block" type="submit">登录</button>
+    <div id="msg" class="msg err"></div>
+  </form>
+</main>
+<script src="/static/app.js"></script>
+<script src="/static/auth.js"></script>
+</body>
+</html>

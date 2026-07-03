@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 对比</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="compare" data-auth="1">
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-dot"></span>Outpost 哨站</a>
+  <nav class="nav">
+    <a href="/">总览</a>
+    <a href="/compare" class="active">对比</a>
+    <a href="/alerts">告警<span id="navBadge" class="badge hidden">0</span></a>
+    <a href="/settings">设置</a>
+  </nav>
+  <div class="top-actions">
+    <button id="themeBtn" class="btn icon" title="切换浅色/深色">◐</button>
+    <button id="logoutBtn" class="btn ghost sm">退出</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card pad">
+    <div class="row-head"><h3>多节点对比</h3>
+      <div class="seg" id="rangeSeg">
+        <button data-secs="3600" class="active">1 小时</button>
+        <button data-secs="21600">6 小时</button>
+        <button data-secs="86400">24 小时</button>
+      </div>
+    </div>
+    <p class="hint subtle">勾选要对比的节点(最多 8 个),叠加查看 CPU 与内存曲线。</p>
+    <div id="nodePick" class="pick"></div>
+  </section>
+
+  <section class="charts">
+    <div class="card chart-card"><h4>CPU 使用率 (%)</h4><div class="chart" id="cpuChart"></div></div>
+    <div class="card chart-card"><h4>内存使用率 (%)</h4><div class="chart" id="memChart"></div></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+<script src="/static/chart.js"></script>
+<script src="/static/compare.js"></script>
+</body>
+</html>

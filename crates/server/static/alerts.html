@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 告警</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="alerts" data-auth="1">
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-dot"></span>Outpost 哨站</a>
+  <nav class="nav">
+    <a href="/">总览</a>
+    <a href="/compare">对比</a>
+    <a href="/alerts" class="active">告警<span id="navBadge" class="badge hidden">0</span></a>
+    <a href="/settings">设置</a>
+  </nav>
+  <div class="top-actions">
+    <button id="themeBtn" class="btn icon" title="切换浅色/深色">◐</button>
+    <button id="logoutBtn" class="btn ghost sm">退出</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card pad">
+    <div class="row-head">
+      <h3>当前告警 / 历史事件</h3>
+      <span id="firingCount" class="subtle"></span>
+    </div>
+    <table class="tbl" id="eventTbl"></table>
+  </section>
+
+  <section class="card pad">
+    <div class="row-head">
+      <h3>告警规则</h3>
+      <button id="addRuleBtn" class="btn primary sm">新增规则</button>
+    </div>
+    <table class="tbl" id="ruleTbl"></table>
+  </section>
+
+  <section class="card pad">
+    <div class="row-head">
+      <h3>通知渠道(Webhook)</h3>
+      <button id="addChanBtn" class="btn primary sm">新增渠道</button>
+    </div>
+    <p class="hint subtle">支持飞书 / 钉钉 / 企业微信 / Slack 群机器人及通用接收端(按域名自动适配消息格式)。
+      出站强制 https 并做 SSRF 校验:默认拒绝私网/回环目标。</p>
+    <table class="tbl" id="chanTbl"></table>
+  </section>
+</main>
+
+<dialog id="ruleDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="ruleForm">
+    <h3>新增告警规则</h3>
+    <label>规则名 <input id="rName" type="text" maxlength="64" required placeholder="例如:CPU 过高"></label>
+    <label>指标
+      <select id="rMetric">
+        <option value="cpu_pct">CPU 使用率 (%)</option>
+        <option value="mem_pct">内存使用率 (%)</option>
+        <option value="disk_pct">磁盘使用率 (%)</option>
+        <option value="swap_pct">Swap 使用率 (%)</option>
+        <option value="load1">1 分钟负载</option>
+        <option value="cpu_temp">CPU 温度 (℃)</option>
+        <option value="tcp_conns">TCP 连接数</option>
+        <option value="offline">节点离线</option>
+      </select>
+    </label>
+    <div id="threshRow">
+      <label>条件
+        <select id="rComparator">
+          <option value="gt">大于 &gt;</option>
+          <option value="lt">小于 &lt;</option>
+        </select>
+      </label>
+      <label>阈值 <input id="rThreshold" type="number" step="any" min="0" value="90"></label>
+    </div>
+    <label>持续时间(秒,连续超限多久才告警;离线时为容忍时长)
+      <input id="rDuration" type="number" min="0" max="86400" value="60">
+    </label>
+    <label>作用范围
+      <select id="rNode"><option value="">所有节点</option></select>
+    </label>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn ghost" formnovalidate>取消</button>
+      <button class="btn primary" type="submit">创建</button>
+    </div>
+    <div id="ruleMsg" class="msg err"></div>
+  </form>
+</dialog>
+
+<dialog id="chanDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="chanForm">
+    <h3>新增通知渠道</h3>
+    <label>名称 <input id="cName" type="text" maxlength="64" required placeholder="例如:运维告警群"></label>
+    <label>类型
+      <select id="cKind">
+        <option value="webhook">Webhook(飞书/钉钉/企业微信/Slack/通用)</option>
+        <option value="telegram">Telegram Bot</option>
+        <option value="bark">Bark(iOS 推送)</option>
+      </select>
+    </label>
+    <label id="cUrlLabel">Webhook URL(https)
+      <input id="cUrl" type="text" maxlength="2048" required placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
+    </label>
+    <label id="cTargetLabel" class="hidden">Chat ID(数字或 @频道名)
+      <input id="cTarget" type="text" maxlength="40" placeholder="例如:123456789 或 @mychannel">
+    </label>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn ghost" formnovalidate>取消</button>
+      <button class="btn primary" type="submit">保存</button>
+    </div>
+    <div id="chanMsg" class="msg err"></div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+<script src="/static/alerts.js"></script>
+</body>
+</html>
