@@ -28,6 +28,7 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("app.js", include_str!("../../static/app.js"), "text/javascript; charset=utf-8"),
     ("chart.js", include_str!("../../static/chart.js"), "text/javascript; charset=utf-8"),
     ("dashboard.js", include_str!("../../static/dashboard.js"), "text/javascript; charset=utf-8"),
+    ("servers.js", include_str!("../../static/servers.js"), "text/javascript; charset=utf-8"),
     ("node.js", include_str!("../../static/node.js"), "text/javascript; charset=utf-8"),
     ("settings.js", include_str!("../../static/settings.js"), "text/javascript; charset=utf-8"),
     ("alerts.js", include_str!("../../static/alerts.js"), "text/javascript; charset=utf-8"),
@@ -109,6 +110,14 @@ pub async fn compare_page(State(st): State<AppState>, headers: HeaderMap) -> Res
         return r;
     }
     page(include_str!("../../static/compare.html"))
+}
+
+/// GET /servers — 服务器管理模块
+pub async fn servers_page(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(r) = guard(&st, &headers).await {
+        return r;
+    }
+    page(include_str!("../../static/servers.html"))
 }
 
 /// GET /status/{slug} — 公开状态页(仅 slug 匹配时;静态壳,数据由公开 API 拉取)。

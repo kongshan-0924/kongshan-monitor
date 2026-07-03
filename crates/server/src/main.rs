@@ -192,6 +192,7 @@ fn build_router(st: AppState) -> Router {
         .route("/login", get(handlers::pages::login_page))
         .route("/setup", get(handlers::pages::setup_page))
         .route("/settings", get(handlers::pages::settings_page))
+        .route("/servers", get(handlers::pages::servers_page))
         .route("/alerts", get(handlers::pages::alerts_page))
         .route("/nodes/{id}", get(handlers::pages::node_page))
         .route("/static/{file}", get(handlers::pages::asset))

@@ -155,7 +155,7 @@ async fn node_summary(st: &AppState, interval: i64) -> Result<Vec<Value>, AppErr
     .await?;
     let firing: std::collections::HashSet<i64> = firing_rows.into_iter().map(|r| r.node_id).collect();
     let rows = sqlx::query!(
-        r#"SELECT id as "id!", name as "name!", grp as "grp!", revoked as "revoked!: i64",
+        r#"SELECT id as "id!", name as "name!", grp as "grp!", note as "note!", revoked as "revoked!: i64",
                   token_hash, registered_at, last_seen,
                   hostname as "hostname!", os as "os!", kernel as "kernel!", arch as "arch!",
                   cores as "cores!: i64", mem_total as "mem_total!: i64",
@@ -189,6 +189,7 @@ async fn node_summary(st: &AppState, interval: i64) -> Result<Vec<Value>, AppErr
             "id": r.id,
             "name": r.name,
             "grp": r.grp,
+            "note": r.note,
             "online": online,
             "alerting": firing.contains(&r.id),
             "revoked": r.revoked != 0,

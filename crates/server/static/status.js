@@ -1,7 +1,7 @@
 /* 公开状态页:脱敏只读大盘(名称/分组/在线/CPU/内存/磁盘 百分比)。 */
 "use strict";
 
-const SLUG = (location.pathname.match(/^\/status\/([0-9a-f]{24})$/) || [])[1] || "";
+const SLUG = (location.pathname.match(/^\/status\/([a-z0-9_-]{2,64})$/) || [])[1] || "";
 
 function bar(label, p) {
   const wrap = el("div", "meter");

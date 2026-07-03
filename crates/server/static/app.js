@@ -73,11 +73,32 @@ function pct(used, total) {
   return Math.min(100, Math.max(0, (used / total) * 100));
 }
 
-/* ---------- 主题 ---------- */
+/* ---------- 主题(浅/深 + 配色) ---------- */
+const THEMES = [
+  { id: "green", name: "森林绿", color: "#3e8e7e" },
+  { id: "ocean", name: "海洋蓝", color: "#3b7dd8" },
+  { id: "teal", name: "青碧", color: "#2f9e8f" },
+  { id: "violet", name: "紫罗兰", color: "#7c6bd0" },
+  { id: "amber", name: "暖橙", color: "#c8862a" },
+  { id: "rose", name: "玫瑰", color: "#cc5f7a" },
+  { id: "graphite", name: "石墨", color: "#5f6f7c" },
+];
+function applyAccent(id) {
+  document.documentElement.setAttribute("data-theme", id || "green");
+}
+function currentAccent() {
+  return localStorage.getItem("op-accent") || "green";
+}
+function setAccent(id) {
+  localStorage.setItem("op-accent", id);
+  applyAccent(id);
+  document.dispatchEvent(new CustomEvent("op-theme"));
+}
 (function initTheme() {
   const saved = localStorage.getItem("op-theme");
   if (saved === "dark") document.documentElement.classList.add("dark");
   if (saved === "light") document.documentElement.classList.add("light");
+  applyAccent(currentAccent());
 })();
 function bindChrome() {
   const tb = $("#themeBtn");

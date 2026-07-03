@@ -15,24 +15,48 @@ use std::net::SocketAddr;
 
 const SLUG_KEY: &str = "status_slug";
 
-/// slug 合法性:24 位小写 hex。
+/// slug 合法性:2~64 位,仅小写字母/数字/连字符/下划线(自定义后缀)。
 fn valid_slug(s: &str) -> bool {
-    s.len() == 24 && outpost_common::is_lower_hex(s)
+    let n = s.len();
+    (2..=64).contains(&n)
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
-/// POST /api/status/enable — 生成并存储 slug。
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnableReq {
+    /// 自定义后缀(留空则随机生成)。前缀固定为面板访问地址,不可改。
+    #[serde(default)]
+    slug: String,
+}
+
+/// POST /api/status/enable — 用自定义(或随机)后缀启用状态页。
 pub async fn enable(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     user: SessionUser,
+    Json(req): Json<EnableReq>,
 ) -> Result<Json<Value>, AppError> {
-    let full = gen_token_hex().map_err(|_| AppError::Internal)?;
-    let slug = full.get(..24).unwrap_or("").to_string();
+    let slug = if req.slug.trim().is_empty() {
+        // 未指定 → 随机 12 位
+        let full = gen_token_hex().map_err(|_| AppError::Internal)?;
+        full.get(..12).unwrap_or("").to_string()
+    } else {
+        let s = req.slug.trim().to_lowercase();
+        if !valid_slug(&s) {
+            return Err(AppError::bad("后缀需为 2~64 位,仅限小写字母、数字、连字符、下划线"));
+        }
+        s
+    };
     set_setting(&st.db, SLUG_KEY, &slug).await?;
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
-    audit::log(&st.db, &user.username, &ip.to_string(), "status_enable", "").await;
-    Ok(Json(json!({ "slug": slug, "url": format!("{}/status/{}", st.cfg.server.public_url.trim_end_matches('/'), slug) })))
+    audit::log(&st.db, &user.username, &ip.to_string(), "status_enable", &slug).await;
+    Ok(Json(json!({
+        "slug": slug,
+        "url": format!("{}/status/{}", st.cfg.server.public_url.trim_end_matches('/'), slug),
+    })))
 }
 
 /// POST /api/status/disable — 清除 slug(立即失效)。

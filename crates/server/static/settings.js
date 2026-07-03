@@ -1,15 +1,59 @@
-/* 设置页:监控参数、改密、会话、审计日志。 */
+/* 设置页:左分类导航 + 各功能区。 */
 "use strict";
 
 document.addEventListener("DOMContentLoaded", async () => {
+  // ---------- 左侧分类导航:点击显示对应区 ----------
+  const navLinks = $$("#setNav a");
+  function showSection(id) {
+    $$(".settings-content .card.pad").forEach((s) => s.classList.toggle("show", s.id === id));
+    navLinks.forEach((a) => a.classList.toggle("active", a.dataset.target === id));
+    window.scrollTo(0, 0);
+  }
+  navLinks.forEach((a) => a.addEventListener("click", () => showSection(a.dataset.target)));
+  // 支持 #hash 直达
+  if (location.hash) { const id = location.hash.slice(1); if (document.getElementById(id)) showSection(id); }
+
+  // ---------- 外观主题 ----------
+  function renderThemes() {
+    const box = $("#themeSwatches");
+    box.replaceChildren();
+    const cur = currentAccent();
+    for (const t of THEMES) {
+      const b = el("button", "theme-swatch" + (t.id === cur ? " active" : ""));
+      b.type = "button";
+      const dot = el("span", "sw-dot"); dot.style.background = t.color;
+      b.appendChild(dot); b.appendChild(el("span", "sw-name", t.name));
+      b.addEventListener("click", () => { setAccent(t.id); renderThemes(); });
+      box.appendChild(b);
+    }
+  }
+  renderThemes();
+  $$('#s-appearance [data-mode]').forEach((b) => b.addEventListener("click", () => {
+    const m = b.dataset.mode;
+    const root = document.documentElement;
+    root.classList.remove("light", "dark");
+    if (m === "light") { root.classList.add("light"); localStorage.setItem("op-theme", "light"); }
+    else if (m === "dark") { root.classList.add("dark"); localStorage.setItem("op-theme", "dark"); }
+    else { localStorage.removeItem("op-theme"); }
+    document.dispatchEvent(new CustomEvent("op-theme"));
+  }));
+
+  // 公开状态页前缀 = 当前访问地址
+  $("#statusPrefix").textContent = location.origin + "/status/";
+
   try {
     const s = await api("GET", "/api/settings");
     $("#interval").value = s.report_interval_secs;
     $("#retention").value = s.retention_days;
-    $("#statusOn").classList.toggle("hidden", !s.status_enabled);
-    $("#statusOff").classList.toggle("hidden", !!s.status_enabled);
-    if (s.status_enabled) $("#statusUrl").textContent = s.status_url;
+    renderStatusState(s.status_enabled, s.status_url);
   } catch (_) {}
+
+  function renderStatusState(enabled, url) {
+    $("#statusOn").classList.toggle("hidden", !enabled);
+    $("#statusOff").classList.toggle("hidden", !!enabled);
+    if (enabled && url) $("#statusUrl").textContent = url;
+  }
+  window.__renderStatusState = renderStatusState;
 
   $("#sysForm").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -123,19 +167,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (_) {}
   });
 
-  // ---------- 公开状态页 ----------
-  function renderStatus(enabled, url) {
-    $("#statusOn").classList.toggle("hidden", !enabled);
-    $("#statusOff").classList.toggle("hidden", enabled);
-    if (enabled) $("#statusUrl").textContent = url;
-  }
+  // ---------- 公开状态页(自定义后缀)----------
   $("#statusEnableBtn").addEventListener("click", async () => {
-    try { const r = await api("POST", "/api/status/enable"); renderStatus(true, r.url); }
-    catch (e) { alert(e.error || "失败"); }
+    $("#statusMsg").textContent = "";
+    try {
+      const r = await api("POST", "/api/status/enable", { slug: $("#statusSlug").value.trim() });
+      renderStatusState(true, location.origin + "/status/" + r.slug);
+    } catch (e) { $("#statusMsg").textContent = e.error || "失败"; }
+  });
+  $("#statusChangeBtn").addEventListener("click", () => {
+    // 回到编辑态改地址(不影响已启用,直到点开启覆盖)
+    $("#statusOn").classList.add("hidden");
+    $("#statusOff").classList.remove("hidden");
   });
   $("#statusDisableBtn").addEventListener("click", async () => {
     if (!confirm("关闭后公开链接立即失效,确认?")) return;
-    try { await api("POST", "/api/status/disable"); renderStatus(false, ""); }
+    try { await api("POST", "/api/status/disable"); renderStatusState(false, ""); }
     catch (e) { alert(e.error || "失败"); }
   });
 

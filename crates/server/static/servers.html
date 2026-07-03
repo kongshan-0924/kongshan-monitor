@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outpost 哨站 · 服务器管理</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="servers" data-auth="1">
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-dot"></span>Outpost 哨站</a>
+  <nav class="nav">
+    <a href="/">总览</a>
+    <a href="/servers" class="active">服务器</a>
+    <a href="/compare">对比</a>
+    <a href="/alerts">告警<span id="navBadge" class="badge hidden">0</span></a>
+    <a href="/settings">设置</a>
+  </nav>
+  <div class="top-actions">
+    <button id="addNodeBtn" class="btn primary sm">添加节点</button>
+    <button id="themeBtn" class="btn icon" title="切换浅色/深色">◐</button>
+    <button id="logoutBtn" class="btn ghost sm">退出</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card pad">
+    <div class="row-head">
+      <h3>服务器管理</h3>
+      <input id="search" type="search" placeholder="搜索名称 / 主机名 / 分组…" class="tb-search" style="max-width:280px">
+    </div>
+
+    <div class="batchbar hidden" id="batchbar">
+      <span id="selCount">已选 0</span>
+      <input id="batchGrp" type="text" maxlength="32" placeholder="改分组为…" class="tb-sel" style="width:150px">
+      <button id="batchSetGrp" class="btn ghost sm">应用分组</button>
+      <button id="batchRevoke" class="btn warn sm">批量吊销</button>
+      <button id="batchDelete" class="btn danger sm">批量删除</button>
+      <button id="selClear" class="btn ghost sm">取消选择</button>
+    </div>
+
+    <table class="tbl" id="srvTbl"></table>
+  </section>
+</main>
+
+<dialog id="addDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="addForm">
+    <h3>添加节点</h3>
+    <div id="addStep1">
+      <label>节点名称 <input id="nodeName" type="text" maxlength="64" required placeholder="例如:web-1"></label>
+      <label>分组(可选) <input id="nodeGrp" type="text" maxlength="32" placeholder="例如:生产"></label>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>取消</button>
+        <button id="createBtn" value="default" class="btn primary" type="submit">创建并生成命令</button>
+      </div>
+    </div>
+    <div id="addStep2" class="hidden">
+      <p class="hint">在目标服务器以 root 执行(密钥 <b>30 分钟内有效、仅此一次显示</b>):</p>
+      <pre id="installCmd" class="cmd"></pre>
+      <div class="dlg-actions">
+        <button id="copyCmd" type="button" class="btn primary">复制命令</button>
+        <button value="close" class="btn ghost">完成</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="editDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="editForm">
+    <h3>编辑节点</h3>
+    <label>名称 <input id="eName" type="text" maxlength="64" required></label>
+    <label>分组 <input id="eGrp" type="text" maxlength="32"></label>
+    <label>备注 <input id="eNote" type="text" maxlength="200"></label>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn ghost" formnovalidate>取消</button>
+      <button class="btn primary" type="submit">保存</button>
+    </div>
+    <div id="editMsg" class="msg err"></div>
+  </form>
+</dialog>
+
+<dialog id="cmdDlg" class="dlg">
+  <div class="dlg-body">
+    <h3>新安装命令</h3>
+    <p class="hint">旧 token 已吊销。在目标机重新执行(30 分钟内有效):</p>
+    <pre id="newCmd" class="cmd"></pre>
+    <div class="dlg-actions">
+      <button id="copyNewCmd" type="button" class="btn primary">复制命令</button>
+      <button id="closeCmdDlg" type="button" class="btn ghost">完成</button>
+    </div>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+<script src="/static/servers.js"></script>
+</body>
+</html>
