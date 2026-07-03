@@ -43,8 +43,10 @@ enabled = true
 cert_path = "$ETC/pki/server-fullchain.pem"
 key_path = "$ETC/pki/server.key"
 [security]
-cookie_secure = true
-hsts = true
+# 自签证书的 LAN 部署把 OP_COOKIE_SECURE/OP_HSTS 设为 false:浏览器会拒绝存储
+# 不可信源的 __Host-/Secure cookie 导致登录后无会话。服务端仅监听 HTTPS,无明文端点。
+cookie_secure = ${OP_COOKIE_SECURE:-true}
+hsts = ${OP_HSTS:-true}
 [storage]
 db_path = "$VAR/outpost.db"
 [install]

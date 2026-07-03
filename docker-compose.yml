@@ -15,6 +15,10 @@ services:
       # 首启创建管理员(创建后此值不再使用,可留空或删除)
       OUTPOST_ADMIN_USER: "admin"
       OUTPOST_ADMIN_PASSWORD: "ChangeMe_请改成强密码123"
+      # 自签证书 + 局域网/IP 直连时设为 "false":否则浏览器拒存 Secure/__Host- cookie,
+      # 表现为"登录后没反应"。有可信域名证书(反代 / 公共 CA)时保持默认 "true"。
+      OP_COOKIE_SECURE: "true"
+      OP_HSTS: "true"
     volumes:
       - outpost-etc:/etc/outpost     # 证书 + 配置(务必持久化,CA 指纹需稳定)
       - outpost-data:/var/lib/outpost # 数据库 + agent 分发目录
