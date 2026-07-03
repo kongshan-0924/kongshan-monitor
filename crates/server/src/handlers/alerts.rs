@@ -2,7 +2,8 @@
 //! 输入严格校验:指标/比较符/渠道类型走白名单枚举,URL 交由 SSRF 加固客户端处理。
 
 use crate::alerts::{
-    valid_channel_kind, valid_chat_id, valid_comparator, valid_metric, valid_telegram_token,
+    valid_channel_kind, valid_chat_id, valid_comparator, valid_metric, valid_severity,
+    valid_telegram_token,
 };
 use crate::audit;
 use crate::errors::AppError;
@@ -33,10 +34,18 @@ pub struct RuleReq {
     /// None = 所有节点
     #[serde(default)]
     node_id: Option<i64>,
+    #[serde(default = "default_warning")]
+    severity: String,
 }
 
 fn default_gt() -> String {
     "gt".to_string()
+}
+fn default_warning() -> String {
+    "warning".to_string()
+}
+fn default_info() -> String {
+    "info".to_string()
 }
 
 #[derive(Deserialize)]
@@ -46,10 +55,27 @@ pub struct ChannelReq {
     #[serde(default = "default_webhook")]
     kind: String,
     /// webhook: 完整 https URL;telegram: bot token;bark: 推送基址(https)
+    #[serde(default)]
     url: String,
     /// telegram: chat_id;其余留空
     #[serde(default)]
     target: String,
+    // --- SMTP 渠道字段 ---
+    #[serde(default)]
+    smtp_host: String,
+    #[serde(default)]
+    smtp_port: Option<u16>,
+    #[serde(default)]
+    smtp_user: String,
+    #[serde(default)]
+    smtp_pass: String,
+    #[serde(default)]
+    smtp_from: String,
+    #[serde(default)]
+    smtp_to: String,
+    /// 渠道最低接收严重度(info/warning/critical)
+    #[serde(default = "default_info")]
+    min_severity: String,
 }
 
 fn default_webhook() -> String {
@@ -57,27 +83,54 @@ fn default_webhook() -> String {
 }
 
 /// 按渠道类型校验并归一化 (url, extra)。
-fn validate_channel(kind: &str, url: &str, target: &str) -> Result<(String, String), AppError> {
-    let url = url.trim();
-    if url.len() > 2048 {
-        return Err(AppError::bad("地址过长"));
-    }
-    match kind {
+fn validate_channel(req: &ChannelReq) -> Result<(String, String), AppError> {
+    match req.kind.as_str() {
         "webhook" | "bark" => {
+            let url = req.url.trim();
+            if url.len() > 2048 {
+                return Err(AppError::bad("地址过长"));
+            }
             if !url.starts_with("https://") {
                 return Err(AppError::bad("必须是 https:// 地址"));
             }
             Ok((url.to_string(), String::new()))
         }
         "telegram" => {
+            let url = req.url.trim();
             if !valid_telegram_token(url) {
                 return Err(AppError::bad("Telegram Bot Token 格式不正确"));
             }
-            let chat = target.trim();
+            let chat = req.target.trim();
             if !valid_chat_id(chat) {
                 return Err(AppError::bad("Telegram chat_id 格式不正确(数字或 @频道名)"));
             }
             Ok((url.to_string(), chat.to_string()))
+        }
+        "smtp" => {
+            let host = req.smtp_host.trim();
+            if host.is_empty() || host.len() > 255 {
+                return Err(AppError::bad("SMTP 服务器地址非法"));
+            }
+            let port = req.smtp_port.unwrap_or(465);
+            if !crate::notify_smtp::valid_email(&req.smtp_from)
+                || !crate::notify_smtp::valid_email(&req.smtp_to)
+            {
+                return Err(AppError::bad("发件人/收件人邮箱格式非法"));
+            }
+            if req.smtp_user.is_empty()
+                || req.smtp_user.len() > 320
+                || req.smtp_pass.is_empty()
+                || req.smtp_pass.len() > 256
+            {
+                return Err(AppError::bad("SMTP 账号或密码非法"));
+            }
+            let extra = json!({
+                "host": host, "port": port,
+                "username": req.smtp_user, "password": req.smtp_pass,
+                "from": req.smtp_from.trim(), "to": req.smtp_to.trim(),
+            })
+            .to_string();
+            Ok((host.to_string(), extra))
         }
         _ => Err(AppError::bad("暂不支持的渠道类型")),
     }
@@ -89,7 +142,7 @@ pub async fn list_rules(State(st): State<AppState>, _u: SessionUser) -> Result<J
         r#"SELECT r.id as "id!", r.name as "name!", r.metric as "metric!",
                   r.comparator as "comparator!", r.threshold as "threshold!: f64",
                   r.duration_secs as "duration_secs!", r.node_id, r.enabled as "enabled!: i64",
-                  n.name as node_name
+                  r.severity as "severity!", n.name as node_name
            FROM alert_rules r LEFT JOIN nodes n ON n.id = r.node_id
            ORDER BY r.id DESC"#
     )
@@ -102,6 +155,7 @@ pub async fn list_rules(State(st): State<AppState>, _u: SessionUser) -> Result<J
                 "id": r.id, "name": r.name, "metric": r.metric, "comparator": r.comparator,
                 "threshold": r.threshold, "duration_secs": r.duration_secs,
                 "node_id": r.node_id, "node_name": r.node_name, "enabled": r.enabled != 0,
+                "severity": r.severity,
             })
         })
         .collect();
@@ -132,6 +186,9 @@ pub async fn create_rule(
     if !(0..=86400).contains(&req.duration_secs) {
         return Err(AppError::bad("持续时间需在 0~86400 秒"));
     }
+    if !valid_severity(&req.severity) {
+        return Err(AppError::bad("严重度需为 info/warning/critical"));
+    }
     // 校验 node_id 存在(避免悬挂引用/越权探测)
     if let Some(nid) = req.node_id {
         let exists = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM nodes WHERE id = ?1"#, nid)
@@ -149,9 +206,9 @@ pub async fn create_rule(
     }
     let now = unix_now();
     let r = sqlx::query!(
-        "INSERT INTO alert_rules(name, metric, comparator, threshold, duration_secs, node_id, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        name, req.metric, req.comparator, req.threshold, req.duration_secs, req.node_id, now
+        "INSERT INTO alert_rules(name, metric, comparator, threshold, duration_secs, node_id, severity, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        name, req.metric, req.comparator, req.threshold, req.duration_secs, req.node_id, req.severity, now
     )
     .execute(&st.db)
     .await?;
@@ -240,7 +297,7 @@ pub async fn list_events(State(st): State<AppState>, _u: SessionUser) -> Result<
 pub async fn list_channels(State(st): State<AppState>, _u: SessionUser) -> Result<Json<Value>, AppError> {
     let rows = sqlx::query!(
         r#"SELECT id as "id!", kind as "kind!", name as "name!", url as "url!",
-                  extra as "extra!", enabled as "enabled!: i64"
+                  extra as "extra!", enabled as "enabled!: i64", min_severity as "min_severity!"
            FROM notify_channels ORDER BY id DESC"#
     )
     .fetch_all(&st.db)
@@ -251,6 +308,7 @@ pub async fn list_channels(State(st): State<AppState>, _u: SessionUser) -> Resul
             json!({
                 "id": c.id, "kind": c.kind, "name": c.name,
                 "url": mask_target(&c.kind, &c.url, &c.extra), "enabled": c.enabled != 0,
+                "min_severity": c.min_severity,
             })
         })
         .collect();
@@ -263,6 +321,14 @@ fn mask_target(kind: &str, url: &str, extra: &str) -> String {
         "telegram" => {
             let id = url.split(':').next().unwrap_or("bot");
             format!("Telegram bot {id}··· → {extra}")
+        }
+        "smtp" => {
+            // extra 是含凭据的 JSON,绝不回显;仅显示主机与收件人
+            let to = serde_json::from_str::<Value>(extra)
+                .ok()
+                .and_then(|v| v.get("to").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            format!("SMTP {url} → {to}")
         }
         _ => {
             let host = url.strip_prefix("https://").and_then(|r| r.split('/').next()).unwrap_or("");
@@ -290,7 +356,10 @@ pub async fn create_channel(
     if !valid_channel_kind(&req.kind) {
         return Err(AppError::bad("暂不支持的渠道类型"));
     }
-    let (url, extra) = validate_channel(&req.kind, &req.url, &req.target)?;
+    if !valid_severity(&req.min_severity) {
+        return Err(AppError::bad("最低严重度需为 info/warning/critical"));
+    }
+    let (url, extra) = validate_channel(&req)?;
     let cnt = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM notify_channels"#)
         .fetch_one(&st.db)
         .await?;
@@ -299,8 +368,8 @@ pub async fn create_channel(
     }
     let now = unix_now();
     let r = sqlx::query!(
-        "INSERT INTO notify_channels(kind, name, url, extra, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
-        req.kind, name, url, extra, now
+        "INSERT INTO notify_channels(kind, name, url, extra, min_severity, created_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        req.kind, name, url, extra, req.min_severity, now
     )
     .execute(&st.db)
     .await?;
@@ -356,5 +425,148 @@ pub async fn delete_channel(
     }
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
     audit::log(&st.db, &user.username, &ip.to_string(), "channel_delete", &format!("#{id}")).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+const MAX_SILENCES: i64 = 200;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SilenceReq {
+    /// None = 所有节点
+    #[serde(default)]
+    node_id: Option<i64>,
+    /// None = 所有规则
+    #[serde(default)]
+    rule_id: Option<i64>,
+    /// 静默时长(秒),60 ~ 30 天
+    duration_secs: i64,
+    #[serde(default)]
+    reason: String,
+}
+
+/// GET /api/alerts/silences — 生效中/未来的静默窗口。
+pub async fn list_silences(State(st): State<AppState>, _u: SessionUser) -> Result<Json<Value>, AppError> {
+    let now = unix_now();
+    let rows = sqlx::query!(
+        r#"SELECT s.id as "id!", s.node_id, s.rule_id, s.start_ts as "start_ts!",
+                  s.end_ts as "end_ts!", s.reason as "reason!",
+                  n.name as node_name, r.name as rule_name
+           FROM alert_silences s
+           LEFT JOIN nodes n ON n.id = s.node_id
+           LEFT JOIN alert_rules r ON r.id = s.rule_id
+           WHERE s.end_ts > ?1
+           ORDER BY s.end_ts ASC"#,
+        now
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|s| {
+            json!({
+                "id": s.id, "node_id": s.node_id, "rule_id": s.rule_id,
+                "node_name": s.node_name, "rule_name": s.rule_name,
+                "start_ts": s.start_ts, "end_ts": s.end_ts, "reason": s.reason,
+                "active": s.start_ts <= now,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+/// POST /api/alerts/silences — 新建静默窗口(自现在起 duration 秒)。
+pub async fn create_silence(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: SessionUser,
+    Json(req): Json<SilenceReq>,
+) -> Result<Json<Value>, AppError> {
+    if !(60..=30 * 86400).contains(&req.duration_secs) {
+        return Err(AppError::bad("静默时长需在 60 秒 ~ 30 天"));
+    }
+    if let Some(nid) = req.node_id {
+        let ok = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM nodes WHERE id = ?1"#, nid)
+            .fetch_one(&st.db)
+            .await?;
+        if ok == 0 {
+            return Err(AppError::bad("指定节点不存在"));
+        }
+    }
+    if let Some(rid) = req.rule_id {
+        let ok = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM alert_rules WHERE id = ?1"#, rid)
+            .fetch_one(&st.db)
+            .await?;
+        if ok == 0 {
+            return Err(AppError::bad("指定规则不存在"));
+        }
+    }
+    let cnt = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM alert_silences"#)
+        .fetch_one(&st.db)
+        .await?;
+    if cnt >= MAX_SILENCES {
+        return Err(AppError::bad("静默窗口数量已达上限"));
+    }
+    let reason = outpost_common::clean_str(&req.reason, 200);
+    let now = unix_now();
+    let end = now.saturating_add(req.duration_secs);
+    let r = sqlx::query!(
+        "INSERT INTO alert_silences(node_id, rule_id, start_ts, end_ts, reason, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        req.node_id, req.rule_id, now, end, reason, now
+    )
+    .execute(&st.db)
+    .await?;
+    let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
+    audit::log(&st.db, &user.username, &ip.to_string(), "silence_create", &reason).await;
+    Ok(Json(json!({ "id": r.last_insert_rowid() })))
+}
+
+/// DELETE /api/alerts/silences/{id}
+pub async fn delete_silence(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: SessionUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let r = sqlx::query!("DELETE FROM alert_silences WHERE id = ?1", id).execute(&st.db).await?;
+    if r.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
+    audit::log(&st.db, &user.username, &ip.to_string(), "silence_delete", &format!("#{id}")).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenotifyReq {
+    secs: i64,
+}
+
+/// GET /api/alerts/renotify — 当前重复提醒间隔(0=关闭)。
+pub async fn get_renotify(State(st): State<AppState>, _u: SessionUser) -> Result<Json<Value>, AppError> {
+    let secs = crate::db::setting_i64(&st.db, "alert_renotify_secs", 0, 0, 7 * 86400).await;
+    Ok(Json(json!({ "secs": secs })))
+}
+
+/// POST /api/alerts/renotify — 设置重复提醒间隔(0 或 300~7 天)。
+pub async fn set_renotify(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: SessionUser,
+    Json(req): Json<RenotifyReq>,
+) -> Result<Json<Value>, AppError> {
+    if req.secs != 0 && !(300..=7 * 86400).contains(&req.secs) {
+        return Err(AppError::bad("重复提醒间隔需为 0(关闭)或 300 秒 ~ 7 天"));
+    }
+    crate::db::set_setting(&st.db, "alert_renotify_secs", &req.secs.to_string())
+        .await
+        .map_err(|_| AppError::bad("保存失败"))?;
+    let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
+    audit::log(&st.db, &user.username, &ip.to_string(), "alert_renotify_set", &req.secs.to_string()).await;
     Ok(Json(json!({ "ok": true })))
 }

@@ -1,12 +1,18 @@
-/* 告警页:事件列表、规则 CRUD、渠道 CRUD + 测试。全部 textContent 渲染。 */
+/* 告警页:事件、规则(分级)、渠道(含 SMTP,按严重度路由)、静默窗口、重复提醒。
+   全部 textContent 渲染,不使用 innerHTML。 */
 "use strict";
 
 const METRIC_LABEL = {
   cpu_pct: "CPU 使用率", mem_pct: "内存使用率", disk_pct: "磁盘使用率",
-  swap_pct: "Swap 使用率", load1: "1 分钟负载", offline: "节点离线",
+  swap_pct: "Swap 使用率", load1: "1 分钟负载", cpu_temp: "CPU 温度",
+  tcp_conns: "TCP 连接数", offline: "节点离线",
 };
+const CMP = { gt: ">", gte: "≥", lt: "<", lte: "≤" };
+const SEV_LABEL = { info: "信息", warning: "警告", critical: "严重" };
+const SEV_CLASS = { info: "sev-info", warning: "sev-warn", critical: "sev-crit" };
 
 function th(row, labels) { labels.forEach((l) => row.appendChild(el("th", null, l))); }
+function sevBadge(s) { return el("span", "spill " + (SEV_CLASS[s] || "sev-warn"), SEV_LABEL[s] || s); }
 
 async function loadEvents() {
   const d = await api("GET", "/api/alerts/events");
@@ -42,19 +48,20 @@ async function loadRules(nodes) {
   const d = await api("GET", "/api/alerts/rules");
   const tbl = $("#ruleTbl");
   tbl.replaceChildren();
-  const head = el("tr"); th(head, ["名称", "条件", "持续", "范围", "状态", "操作"]); tbl.appendChild(head);
+  const head = el("tr"); th(head, ["名称", "级别", "条件", "持续", "范围", "状态", "操作"]); tbl.appendChild(head);
   for (const r of d.items) {
     const tr = el("tr");
     tr.appendChild(el("td", null, r.name));
+    const sevTd = el("td"); sevTd.appendChild(sevBadge(r.severity || "warning")); tr.appendChild(sevTd);
     const cond = r.metric === "offline"
       ? "离线"
-      : METRIC_LABEL[r.metric] + " " + (r.comparator === "lt" ? "<" : ">") + " " + r.threshold;
+      : METRIC_LABEL[r.metric] + " " + (CMP[r.comparator] || ">") + " " + r.threshold;
     tr.appendChild(el("td", null, cond));
     tr.appendChild(el("td", null, r.duration_secs + "s"));
     tr.appendChild(el("td", null, r.node_name || "所有节点"));
     const stTd = el("td");
-    const badge = el("span", "pill " + (r.enabled ? "on" : "off"), r.enabled ? "启用" : "停用");
-    stTd.appendChild(badge); tr.appendChild(stTd);
+    stTd.appendChild(el("span", "pill " + (r.enabled ? "on" : "off"), r.enabled ? "启用" : "停用"));
+    tr.appendChild(stTd);
     const ops = el("td");
     const tog = el("button", "btn ghost xs", r.enabled ? "停用" : "启用");
     tog.addEventListener("click", async () => { await api("POST", "/api/alerts/rules/" + r.id + "/toggle"); loadRules(nodes); });
@@ -66,19 +73,20 @@ async function loadRules(nodes) {
     ops.appendChild(tog); ops.appendChild(del); tr.appendChild(ops);
     tbl.appendChild(tr);
   }
-  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有规则,点「新增规则」开始"); td.colSpan = 6; tr.appendChild(td); tbl.appendChild(tr); }
+  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有规则,点「新增规则」开始"); td.colSpan = 7; tr.appendChild(td); tbl.appendChild(tr); }
 }
 
 async function loadChannels() {
   const d = await api("GET", "/api/alerts/channels");
   const tbl = $("#chanTbl");
   tbl.replaceChildren();
-  const head = el("tr"); th(head, ["名称", "类型", "地址", "操作"]); tbl.appendChild(head);
+  const head = el("tr"); th(head, ["名称", "类型", "地址", "接收级别", "操作"]); tbl.appendChild(head);
   for (const c of d.items) {
     const tr = el("tr");
     tr.appendChild(el("td", null, c.name));
     tr.appendChild(el("td", null, c.kind));
     tr.appendChild(el("td", null, c.url));
+    tr.appendChild(el("td", null, "≥ " + (SEV_LABEL[c.min_severity] || c.min_severity || "信息")));
     const ops = el("td");
     const test = el("button", "btn ghost xs", "测试");
     test.addEventListener("click", async () => {
@@ -95,7 +103,36 @@ async function loadChannels() {
     ops.appendChild(test); ops.appendChild(del); tr.appendChild(ops);
     tbl.appendChild(tr);
   }
-  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有通知渠道"); td.colSpan = 4; tr.appendChild(td); tbl.appendChild(tr); }
+  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有通知渠道"); td.colSpan = 5; tr.appendChild(td); tbl.appendChild(tr); }
+}
+
+async function loadSilences() {
+  const d = await api("GET", "/api/alerts/silences");
+  const tbl = $("#silenceTbl");
+  tbl.replaceChildren();
+  const head = el("tr"); th(head, ["状态", "节点", "规则", "原因", "结束于", "操作"]); tbl.appendChild(head);
+  for (const s of d.items) {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, s.active ? "生效中" : "未开始"));
+    tr.appendChild(el("td", null, s.node_id ? (s.node_name || ("#" + s.node_id)) : "所有节点"));
+    tr.appendChild(el("td", null, s.rule_id ? (s.rule_name || ("#" + s.rule_id)) : "所有规则"));
+    tr.appendChild(el("td", null, s.reason || "—"));
+    tr.appendChild(el("td", null, fmtTime(s.end_ts)));
+    const ops = el("td");
+    const del = el("button", "btn danger xs", "结束");
+    del.addEventListener("click", async () => { await api("DELETE", "/api/alerts/silences/" + s.id); loadSilences(); });
+    ops.appendChild(del); tr.appendChild(ops);
+    tbl.appendChild(tr);
+  }
+  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "当前没有静默窗口"); td.colSpan = 6; tr.appendChild(td); tbl.appendChild(tr); }
+}
+
+function fillNodeSelect(sel, nodes) {
+  for (const n of nodes) {
+    const o = document.createElement("option");
+    o.value = String(n.id); o.textContent = n.name;
+    sel.appendChild(o);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -103,15 +140,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     const nd = await api("GET", "/api/nodes");
     nodes = nd.nodes || [];
-    const sel = $("#rNode");
-    for (const n of nodes) {
-      const o = document.createElement("option");
-      o.value = String(n.id); o.textContent = n.name;
-      sel.appendChild(o);
-    }
+    fillNodeSelect($("#rNode"), nodes);
+    fillNodeSelect($("#sNode"), nodes);
   } catch (_) {}
 
-  await Promise.all([loadEvents(), loadRules(nodes), loadChannels()]);
+  await Promise.all([loadEvents(), loadRules(nodes), loadChannels(), loadSilences()]);
+
+  // 重复提醒设置
+  try {
+    const rn = await api("GET", "/api/alerts/renotify");
+    $("#renotifySel").value = String(rn.secs || 0);
+  } catch (_) {}
+  $("#renotifySel").addEventListener("change", async () => {
+    try {
+      await api("POST", "/api/alerts/renotify", { secs: parseInt($("#renotifySel").value, 10) || 0 });
+      $("#renotifyMsg").textContent = "已保存 ✓";
+      setTimeout(() => { $("#renotifyMsg").textContent = ""; }, 2000);
+    } catch (e) { $("#renotifyMsg").textContent = e.error || "保存失败"; }
+  });
 
   // 指标为离线时隐藏阈值行
   $("#rMetric").addEventListener("change", () => {
@@ -130,6 +176,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       threshold: metric === "offline" ? 0 : parseFloat($("#rThreshold").value),
       duration_secs: parseInt($("#rDuration").value, 10) || 0,
       node_id: $("#rNode").value ? parseInt($("#rNode").value, 10) : null,
+      severity: $("#rSeverity").value,
     };
     try {
       await api("POST", "/api/alerts/rules", body);
@@ -138,17 +185,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (err) { $("#ruleMsg").textContent = err.error || "创建失败"; }
   });
 
+  // 渠道类型切换:显示对应字段
   const KIND_HINT = {
-    webhook: ["Webhook URL(https)", "https://open.feishu.cn/open-apis/bot/v2/hook/...", false],
-    telegram: ["Bot Token", "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", true],
-    bark: ["Bark 推送地址(https)", "https://api.day.app/你的Key", false],
+    webhook: ["Webhook URL(https)", "https://open.feishu.cn/open-apis/bot/v2/hook/..."],
+    telegram: ["Bot Token", "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"],
+    bark: ["Bark 推送地址(https)", "https://api.day.app/你的Key"],
   };
   function syncKind() {
     const k = $("#cKind").value;
-    const [label, ph, needTarget] = KIND_HINT[k];
-    $("#cUrlLabel").childNodes[0].nodeValue = label + " ";
-    $("#cUrl").placeholder = ph;
-    $("#cTargetLabel").classList.toggle("hidden", !needTarget);
+    const isSmtp = k === "smtp";
+    const isTg = k === "telegram";
+    $("#cUrlLabel").classList.toggle("hidden", isSmtp);
+    $("#cTargetLabel").classList.toggle("hidden", isSmtp || !isTg);
+    $("#smtpFields").classList.toggle("hidden", !isSmtp);
+    if (!isSmtp) {
+      const [label, ph] = KIND_HINT[k];
+      $("#cUrlLabel").childNodes[0].nodeValue = label + " ";
+      $("#cUrl").placeholder = ph;
+    }
   }
   $("#cKind").addEventListener("change", syncKind);
 
@@ -156,16 +210,55 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#chanForm").addEventListener("submit", async (e) => {
     if (e.submitter && e.submitter.value === "cancel") return;
     e.preventDefault();
+    const kind = $("#cKind").value;
+    const body = { name: $("#cName").value.trim(), kind, min_severity: $("#cMinSev").value };
+    if (kind === "smtp") {
+      body.smtp_host = $("#cSmtpHost").value.trim();
+      body.smtp_port = parseInt($("#cSmtpPort").value, 10) || 465;
+      body.smtp_user = $("#cSmtpUser").value;
+      body.smtp_pass = $("#cSmtpPass").value;
+      body.smtp_from = $("#cSmtpFrom").value.trim();
+      body.smtp_to = $("#cSmtpTo").value.trim();
+    } else {
+      body.url = $("#cUrl").value.trim();
+      body.target = $("#cTarget").value.trim();
+    }
     try {
-      await api("POST", "/api/alerts/channels", {
-        name: $("#cName").value.trim(),
-        kind: $("#cKind").value,
-        url: $("#cUrl").value.trim(),
-        target: $("#cTarget").value.trim(),
-      });
+      await api("POST", "/api/alerts/channels", body);
       $("#chanDlg").close(); $("#chanForm").reset();
       loadChannels();
     } catch (err) { $("#chanMsg").textContent = err.error || "保存失败"; }
+  });
+
+  // 静默窗口
+  $("#addSilenceBtn").addEventListener("click", async () => {
+    $("#silenceMsg").textContent = "";
+    // 填充规则下拉(每次打开刷新)
+    const sel = $("#sRule");
+    sel.replaceChildren();
+    const opt0 = document.createElement("option"); opt0.value = ""; opt0.textContent = "所有规则"; sel.appendChild(opt0);
+    try {
+      const rd = await api("GET", "/api/alerts/rules");
+      for (const r of rd.items) {
+        const o = document.createElement("option"); o.value = String(r.id); o.textContent = r.name; sel.appendChild(o);
+      }
+    } catch (_) {}
+    $("#silenceDlg").showModal();
+  });
+  $("#silenceForm").addEventListener("submit", async (e) => {
+    if (e.submitter && e.submitter.value === "cancel") return;
+    e.preventDefault();
+    const body = {
+      node_id: $("#sNode").value ? parseInt($("#sNode").value, 10) : null,
+      rule_id: $("#sRule").value ? parseInt($("#sRule").value, 10) : null,
+      duration_secs: parseInt($("#sDuration").value, 10),
+      reason: $("#sReason").value.trim(),
+    };
+    try {
+      await api("POST", "/api/alerts/silences", body);
+      $("#silenceDlg").close(); $("#silenceForm").reset();
+      loadSilences();
+    } catch (err) { $("#silenceMsg").textContent = err.error || "创建失败"; }
   });
 
   // 实时:收到 alert 推送即刷新事件与角标

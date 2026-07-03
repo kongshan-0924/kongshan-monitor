@@ -235,6 +235,10 @@ input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transpare
 .spill-on { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, var(--card)); }
 .spill-off { color: var(--muted); background: color-mix(in srgb, var(--muted) 15%, var(--card)); }
 .spill-pending { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, var(--card)); }
+/* 告警严重度徽章 */
+.spill.sev-info { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, var(--card)); }
+.spill.sev-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, var(--card)); }
+.spill.sev-crit { color: var(--bad); background: color-mix(in srgb, var(--bad) 16%, var(--card)); }
 .tb-check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; cursor: pointer; }
 .batchbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; padding: 10px 14px; background: var(--accent-soft); border-radius: var(--radius); }
 .node-card.alerting { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
@@ -293,8 +297,8 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .btn.xs { padding: 3px 9px; font-size: 11.5px; margin-right: 5px; }
 .row-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 12px; }
 .row-head h3 { margin: 0; }
-#threshRow { display: flex; gap: 12px; }
-#threshRow label { flex: 1; }
+#threshRow, .threshRow { display: flex; gap: 12px; }
+#threshRow label, .threshRow label { flex: 1; }
 
 /* 响应式 */
 @media (max-width: 640px) {

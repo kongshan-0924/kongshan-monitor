@@ -9,6 +9,7 @@ mod db;
 mod errors;
 mod handlers;
 mod middleware;
+mod notify_smtp;
 mod ratelimit;
 mod retention;
 mod session;
@@ -170,6 +171,9 @@ fn build_router(st: AppState) -> Router {
         .route("/api/alerts/channels", get(handlers::alerts::list_channels).post(handlers::alerts::create_channel))
         .route("/api/alerts/channels/{id}", axum::routing::delete(handlers::alerts::delete_channel))
         .route("/api/alerts/channels/{id}/test", post(handlers::alerts::test_channel))
+        .route("/api/alerts/silences", get(handlers::alerts::list_silences).post(handlers::alerts::create_silence))
+        .route("/api/alerts/silences/{id}", axum::routing::delete(handlers::alerts::delete_silence))
+        .route("/api/alerts/renotify", get(handlers::alerts::get_renotify).post(handlers::alerts::set_renotify))
         .route("/api/apitokens", get(handlers::apitokens::list).post(handlers::apitokens::create))
         .route("/api/apitokens/{id}", axum::routing::delete(handlers::apitokens::delete))
         .route("/api/2fa/status", get(handlers::twofa::status))

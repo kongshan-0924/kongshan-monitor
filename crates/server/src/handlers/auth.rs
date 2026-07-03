@@ -240,7 +240,7 @@ pub async fn login(
         let st2 = st.clone();
         let text = format!("🔑 新设备登录:用户 {uname} 首次从 IP {ip_str} 登录 Outpost 面板");
         tokio::spawn(async move {
-            crate::alerts::notify_all(&st2, &text).await;
+            crate::alerts::notify_all(&st2, &text, "info").await;
         });
     }
 

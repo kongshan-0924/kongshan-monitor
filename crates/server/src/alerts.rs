@@ -13,9 +13,11 @@ use std::sync::Mutex;
 pub const METRICS: &[&str] =
     &["cpu_pct", "mem_pct", "disk_pct", "swap_pct", "load1", "cpu_temp", "tcp_conns", "offline"];
 /// 比较符白名单。
-pub const COMPARATORS: &[&str] = &["gt", "lt"];
+pub const COMPARATORS: &[&str] = &["gt", "lt", "gte", "lte"];
 /// 渠道类型白名单。
-pub const CHANNEL_KINDS: &[&str] = &["webhook", "telegram", "bark"];
+pub const CHANNEL_KINDS: &[&str] = &["webhook", "telegram", "bark", "smtp"];
+/// 严重度白名单(有序:info < warning < critical)。
+pub const SEVERITIES: &[&str] = &["info", "warning", "critical"];
 /// 同一 (渠道, 文本) 的最小重发间隔(秒),去重防风暴。
 const NOTIFY_DEDUP_SECS: i64 = 60;
 
@@ -32,6 +34,19 @@ pub fn valid_comparator(c: &str) -> bool {
 #[must_use]
 pub fn valid_channel_kind(k: &str) -> bool {
     CHANNEL_KINDS.contains(&k)
+}
+#[must_use]
+pub fn valid_severity(s: &str) -> bool {
+    SEVERITIES.contains(&s)
+}
+/// 严重度序:info=0 < warning=1 < critical=2(未知视为 warning)。
+#[must_use]
+pub fn sev_rank(s: &str) -> u8 {
+    match s {
+        "info" => 0,
+        "critical" => 2,
+        _ => 1,
+    }
 }
 
 /// Telegram bot token 形态:`<数字>:<字母数字_-,>=20`。
@@ -91,6 +106,7 @@ struct RuleLite {
     comparator: String,
     threshold: f64,
     duration_secs: i64,
+    severity: String,
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -113,7 +129,7 @@ async fn load_rules(st: &AppState, node_id: i64, offline: bool) -> Vec<RuleLite>
     let rows = sqlx::query!(
         r#"SELECT id as "id!", name as "name!", metric as "metric!",
                   comparator as "comparator!", threshold as "threshold!: f64",
-                  duration_secs as "duration_secs!"
+                  duration_secs as "duration_secs!", severity as "severity!"
            FROM alert_rules
            WHERE enabled = 1 AND (node_id IS NULL OR node_id = ?1)
              AND ((?2 = 1 AND metric = 'offline') OR (?2 = 0 AND metric != 'offline'))"#,
@@ -131,6 +147,7 @@ async fn load_rules(st: &AppState, node_id: i64, offline: bool) -> Vec<RuleLite>
             comparator: r.comparator,
             threshold: r.threshold,
             duration_secs: r.duration_secs,
+            severity: r.severity,
         })
         .collect()
 }
@@ -145,6 +162,8 @@ pub async fn on_metrics(st: &AppState, node_id: i64, m: &Metrics, disk_total: i6
         let breaching = match rule.comparator.as_str() {
             "gt" => val > rule.threshold,
             "lt" => val < rule.threshold,
+            "gte" => val >= rule.threshold,
+            "lte" => val <= rule.threshold,
             _ => false,
         };
         transition(st, &rule, node_id, breaching, val, rule.duration_secs, now).await;
@@ -177,7 +196,42 @@ pub async fn patrol(st: AppState) {
                 transition(&st, &rule, node.id, breaching, val, 0, now).await;
             }
         }
+        renotify_sweep(&st).await;
         prune_runtime(&st);
+    }
+}
+
+/// 重复提醒:对仍 firing 且距上次通知超过重发间隔的事件再次外发(全局设置,0=关闭)。
+async fn renotify_sweep(st: &AppState) {
+    let secs = crate::db::setting_i64(&st.db, "alert_renotify_secs", 0, 0, 7 * 86400).await;
+    if secs <= 0 {
+        return;
+    }
+    let now = unix_now();
+    let cutoff = now.saturating_sub(secs);
+    let rows = sqlx::query!(
+        r#"SELECT e.id as "id!", e.rule_id as "rule_id!", e.node_id as "node_id!",
+                  e.message as "message!", r.severity as "severity!", n.name as "node_name!"
+           FROM alert_events e
+           JOIN alert_rules r ON r.id = e.rule_id
+           JOIN nodes n ON n.id = e.node_id
+           WHERE e.resolved_at IS NULL
+             AND (e.last_notified_at IS NULL OR e.last_notified_at <= ?1)
+           LIMIT 200"#,
+        cutoff
+    )
+    .fetch_all(&st.db)
+    .await
+    .unwrap_or_default();
+    for row in rows {
+        if is_silenced(st, row.node_id, row.rule_id, now).await {
+            continue;
+        }
+        let text = format!("🔴 [持续告警] 节点 {} · {}", row.node_name, row.message);
+        notify_all(st, &text, &row.severity).await;
+        let _ = sqlx::query!("UPDATE alert_events SET last_notified_at = ?1 WHERE id = ?2", now, row.id)
+            .execute(&st.db)
+            .await;
     }
 }
 
@@ -226,8 +280,8 @@ async fn transition(
     if do_fire {
         let msg = format_message(rule, val, true);
         let ins = sqlx::query!(
-            "INSERT INTO alert_events(rule_id, node_id, state, value, started_at, message)
-             VALUES(?1, ?2, 'firing', ?3, ?4, ?5)",
+            "INSERT INTO alert_events(rule_id, node_id, state, value, started_at, message, last_notified_at)
+             VALUES(?1, ?2, 'firing', ?3, ?4, ?5, ?4)",
             rule.id,
             node_id,
             val,
@@ -307,12 +361,36 @@ async fn push_and_notify(st: &AppState, rule: &RuleLite, node_id: i64, val: f64,
         "node_id": node_id,
         "firing": firing,
         "rule": rule.name,
+        "severity": rule.severity,
         "text": text,
         "ts": unix_now(),
     });
     let _ = st.live_tx.send(live.to_string());
 
-    notify_all(st, &text).await;
+    // 静默窗口:命中则不外发通知(UI 已推、事件已记录)
+    if is_silenced(st, node_id, rule.id, unix_now()).await {
+        return;
+    }
+    notify_all(st, &text, &rule.severity).await;
+}
+
+/// 是否命中生效中的静默窗口(按节点/规则,NULL 表示通配)。
+pub async fn is_silenced(st: &AppState, node_id: i64, rule_id: i64, now: i64) -> bool {
+    sqlx::query_scalar!(
+        r#"SELECT id as "id!" FROM alert_silences
+           WHERE start_ts <= ?1 AND end_ts > ?1
+             AND (node_id IS NULL OR node_id = ?2)
+             AND (rule_id IS NULL OR rule_id = ?3)
+           LIMIT 1"#,
+        now,
+        node_id,
+        rule_id
+    )
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten()
+    .is_some()
 }
 
 /// 简易 FNV-1a,用于去重键(非密码学用途)。
@@ -325,11 +403,14 @@ fn text_hash(s: &str) -> u64 {
     h
 }
 
-/// 向所有启用渠道发送一段文本(异步、去重节流、失败仅记录)。
-/// 供告警与登录通知复用。
-pub async fn notify_all(st: &AppState, text: &str) {
+/// 向匹配严重度的启用渠道发送一段文本(异步、去重节流、失败仅记录)。
+/// 渠道仅接收 >= 自身 `min_severity` 的告警。供告警与登录通知复用
+///(登录/新设备等系统通知按 `info` 级发送)。
+pub async fn notify_all(st: &AppState, text: &str, severity: &str) {
+    let alert_rank = sev_rank(severity);
     let channels = sqlx::query!(
-        r#"SELECT id as "id!", kind as "kind!", url as "url!", extra as "extra!"
+        r#"SELECT id as "id!", kind as "kind!", url as "url!", extra as "extra!",
+                  min_severity as "min_severity!"
            FROM notify_channels WHERE enabled = 1"#
     )
     .fetch_all(&st.db)
@@ -340,6 +421,10 @@ pub async fn notify_all(st: &AppState, text: &str) {
     let now = unix_now();
     let h = text_hash(text);
     for ch in channels {
+        // 严重度路由:渠道 min_severity 高于本次告警级别则跳过
+        if sev_rank(&ch.min_severity) > alert_rank {
+            continue;
+        }
         // 去重节流:同渠道同文本 NOTIFY_DEDUP_SECS 内只发一次
         {
             let mut guard = st
@@ -401,6 +486,12 @@ pub(crate) async fn send_one(
             // url = Bark 推送基址(https://<server>/<key>);标题+正文 JSON
             let body = serde_json::json!({ "title": "Outpost", "body": text }).to_string();
             crate::notify::post_json(url, &body, allow_private).await
+        }
+        "smtp" => {
+            // extra = SmtpCfg JSON(含 host/凭据/收发件)
+            let cfg: crate::notify_smtp::SmtpCfg =
+                serde_json::from_str(extra).map_err(|_| "SMTP 配置损坏".to_string())?;
+            crate::notify_smtp::send(&cfg, "Outpost 告警通知", text, allow_private, unix_now()).await
         }
         _ => Err("未知渠道类型".into()),
     }

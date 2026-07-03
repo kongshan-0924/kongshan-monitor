@@ -112,7 +112,7 @@ fn parse_https(url: &str) -> Result<(String, u16, String), &'static str> {
 }
 
 /// 选出一个通过 SSRF 校验的目标地址。
-async fn resolve_checked(host: &str, port: u16, allow_private: bool) -> Result<SocketAddr, String> {
+pub(crate) async fn resolve_checked(host: &str, port: u16, allow_private: bool) -> Result<SocketAddr, String> {
     // 主机名本身是 IP 字面量?直接校验,不做 DNS
     if let Ok(ip) = host.parse::<IpAddr>() {
         if !allow_private && !ip_global(ip) {
@@ -131,7 +131,7 @@ async fn resolve_checked(host: &str, port: u16, allow_private: bool) -> Result<S
     Err("目标解析到非公网地址,已拒绝(SSRF 防护)".into())
 }
 
-fn tls_config() -> Arc<ClientConfig> {
+pub(crate) fn tls_config() -> Arc<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     Arc::new(ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
