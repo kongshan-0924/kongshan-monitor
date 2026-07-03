@@ -10,8 +10,9 @@ mod parsers;
 
 use crate::collect::Sampler;
 use crate::config::AgentConfig;
-use futures_util::{SinkExt, StreamExt};
-use outpost_common::{AgentToServer, ServerToAgent};
+use futures_util::{Sink, SinkExt, StreamExt};
+use outpost_common::{AgentToServer, Metrics, ServerToAgent};
+use std::collections::VecDeque;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -136,13 +137,23 @@ async fn run(cfg: AgentConfig, token: String) -> ExitCode {
     sampler.set_watch(cfg.watch_processes.clone());
     let mut interval_secs = cfg.report_interval_secs;
     let mut backoff: u64 = 1;
+    // 断线期间的采样缓冲(有界,丢最旧),重连后补传
+    let mut buffer: VecDeque<Metrics> = VecDeque::new();
 
     log_info!("outpost-agent {VERSION} 启动,上报至 {}", cfg.ws_url());
     loop {
         if *stop_rx.borrow() {
             break;
         }
-        let session = session(&cfg, &token, &tls, &mut sampler, &mut interval_secs, &mut stop_rx);
+        let session = session(
+            &cfg,
+            &token,
+            &tls,
+            &mut sampler,
+            &mut interval_secs,
+            &mut stop_rx,
+            &mut buffer,
+        );
         match session.await {
             Ok(()) => {
                 // 服务端正常关闭:小间隔重连
@@ -155,16 +166,77 @@ async fn run(cfg: AgentConfig, token: String) -> ExitCode {
         if *stop_rx.borrow() {
             break;
         }
-        // 指数退避 + 时间派生抖动(0..400ms),上限 64s
+        // 指数退避 + 时间派生抖动(0..400ms),上限 64s;
+        // 退避等待期间仍按间隔采样并入缓冲,重连后补传,避免数据空洞
         let jitter = u64::try_from(outpost_common::unix_now()).unwrap_or(0) % 400;
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_millis(backoff.saturating_mul(1000).saturating_add(jitter))) => {}
-            _ = stop_rx.changed() => break,
+        let wait = Duration::from_millis(backoff.saturating_mul(1000).saturating_add(jitter));
+        wait_and_sample(wait, interval_secs, &mut sampler, &mut buffer, &mut stop_rx).await;
+        if *stop_rx.borrow() {
+            break;
         }
         backoff = (backoff.saturating_mul(2)).min(64);
     }
     log_info!("outpost-agent 退出");
     ExitCode::SUCCESS
+}
+
+/// 缓冲上限:约 1000 个采样点(有界,超限丢最旧,防内存膨胀)。
+const MAX_BUFFER: usize = 1000;
+/// 单条 Backfill 消息最多携带的点数(配合 WS 消息大小上限分块)。
+const BACKFILL_CHUNK: usize = 120;
+
+/// 入缓冲,满则丢弃最旧点。
+fn push_buffered(buf: &mut VecDeque<Metrics>, m: Metrics) {
+    if buf.len() >= MAX_BUFFER {
+        buf.pop_front();
+    }
+    buf.push_back(m);
+}
+
+/// 退避等待期间持续采样并入缓冲,直到等待结束或收到停止信号。
+async fn wait_and_sample(
+    wait: Duration,
+    interval_secs: u32,
+    sampler: &mut Sampler,
+    buffer: &mut VecDeque<Metrics>,
+    stop_rx: &mut tokio::sync::watch::Receiver<bool>,
+) {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut tick = tokio::time::interval(Duration::from_secs(u64::from(interval_secs.max(1))));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await; // 立即触发的首拍,丢弃
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep_until(deadline) => break,
+            _ = stop_rx.changed() => break,
+            _ = tick.tick() => push_buffered(buffer, sampler.sample()),
+        }
+    }
+}
+
+/// 分块把缓冲点作为 Backfill 消息发送;发送失败即返回错误且缓冲保持不变
+/// (下次重连再补传)。成功发送的块才从缓冲移除。
+async fn flush_backfill<S>(ws: &mut S, buffer: &mut VecDeque<Metrics>) -> Result<(), String>
+where
+    S: Sink<Message> + Unpin,
+    <S as Sink<Message>>::Error: std::fmt::Display,
+{
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    let total = buffer.len();
+    while !buffer.is_empty() {
+        let n = buffer.len().min(BACKFILL_CHUNK);
+        let points: Vec<Metrics> = buffer.iter().take(n).cloned().collect();
+        let m = AgentToServer::Backfill { points };
+        let txt = serde_json::to_string(&m).map_err(|e| format!("序列化失败: {e}"))?;
+        ws.send(Message::Text(txt.into())).await.map_err(|e| format!("补传失败: {e}"))?;
+        for _ in 0..n {
+            buffer.pop_front();
+        }
+    }
+    log_info!("已补传 {total} 个断线期间的采样点");
+    Ok(())
 }
 
 async fn wait_shutdown() {
@@ -186,7 +258,7 @@ async fn wait_shutdown() {
     }
 }
 
-/// 单次连接会话:连接 → Hello → 周期上报,处理白名单下行。
+/// 单次连接会话:连接 → Hello → 补传缓冲 → 周期上报,处理白名单下行。
 async fn session(
     cfg: &AgentConfig,
     token: &str,
@@ -194,6 +266,7 @@ async fn session(
     sampler: &mut Sampler,
     interval_secs: &mut u32,
     stop_rx: &mut tokio::sync::watch::Receiver<bool>,
+    buffer: &mut VecDeque<Metrics>,
 ) -> Result<(), String> {
     let mut req = cfg
         .ws_url()
@@ -225,6 +298,9 @@ async fn session(
     let txt = serde_json::to_string(&hello).map_err(|e| format!("序列化失败: {e}"))?;
     ws.send(Message::Text(txt.into())).await.map_err(|e| format!("发送失败: {e}"))?;
 
+    // 补传断线期间缓冲的采样点(分块;发送失败则保留缓冲,下次重连再传)
+    flush_backfill(&mut ws, buffer).await?;
+
     let mut tick = tokio::time::interval(Duration::from_secs(u64::from(*interval_secs)));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -235,9 +311,14 @@ async fn session(
                 return Ok(());
             }
             _ = tick.tick() => {
-                let m = AgentToServer::Metrics { metrics: sampler.sample() };
+                let metrics = sampler.sample();
+                let m = AgentToServer::Metrics { metrics: metrics.clone() };
                 let txt = serde_json::to_string(&m).map_err(|e| format!("序列化失败: {e}"))?;
-                ws.send(Message::Text(txt.into())).await.map_err(|e| format!("发送失败: {e}"))?;
+                if let Err(e) = ws.send(Message::Text(txt.into())).await {
+                    // 发送失败:把这条纳入缓冲,断开重连后补传
+                    push_buffered(buffer, metrics);
+                    return Err(format!("发送失败: {e}"));
+                }
             }
             incoming = ws.next() => {
                 let Some(msg) = incoming else { return Err("连接被关闭".to_string()) };

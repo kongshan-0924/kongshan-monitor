@@ -281,5 +281,76 @@ async fn handle_msg(st: &AppState, node_id: i64, m: AgentToServer) -> Result<(),
             });
             Ok(())
         }
+        AgentToServer::Backfill { points } => {
+            // 断线补传:历史点携带原始 ts。安全边界——仅接受 [now-2h, now+skew] 窗口内的
+            // 过去点,按 (node_id, ts) 去重入库;不更新 last_seen、不推实时、不触发告警
+            //(避免陈旧数据造成误报)。补传是上行数据,token 持有者即被监控机自身,
+            // 允许其补自身近期历史不构成新的威胁面。
+            const MAX_BACKFILL_AGE: i64 = 2 * 3600;
+            const MAX_POINTS: usize = 500;
+            let skew = st.cfg.metrics.ts_skew_secs;
+
+            // 节点须存在且未吊销
+            let alive = sqlx::query_scalar!("SELECT 1 FROM nodes WHERE id = ?1 AND revoked = 0", node_id)
+                .fetch_optional(&st.db)
+                .await
+                .ok()
+                .flatten();
+            if alive.is_none() {
+                return Err(());
+            }
+
+            let mut inserted = 0u64;
+            for mut metrics in points.into_iter().take(MAX_POINTS) {
+                let ts = metrics.ts;
+                if ts > now.saturating_add(skew) || ts < now.saturating_sub(MAX_BACKFILL_AGE) {
+                    continue; // 越界:未来点或过旧点一律丢弃
+                }
+                if validate_and_clean_metrics(&mut metrics).is_err() {
+                    continue;
+                }
+                let (detail, disk_total, disk_used) = build_detail(&metrics);
+                let mem_total = i64::try_from(metrics.mem_total).unwrap_or(i64::MAX);
+                let mem_used = i64::try_from(metrics.mem_used).unwrap_or(i64::MAX);
+                let mem_avail = i64::try_from(metrics.mem_available).unwrap_or(i64::MAX);
+                let swap_total = i64::try_from(metrics.swap_total).unwrap_or(i64::MAX);
+                let swap_used = i64::try_from(metrics.swap_used).unwrap_or(i64::MAX);
+                let dr = i64::try_from(metrics.disk_read_bps).unwrap_or(i64::MAX);
+                let dw = i64::try_from(metrics.disk_write_bps).unwrap_or(i64::MAX);
+                let rx: i64 = metrics
+                    .nets
+                    .iter()
+                    .map(|n| i64::try_from(n.rx_bps).unwrap_or(0))
+                    .fold(0i64, i64::saturating_add);
+                let tx: i64 = metrics
+                    .nets
+                    .iter()
+                    .map(|n| i64::try_from(n.tx_bps).unwrap_or(0))
+                    .fold(0i64, i64::saturating_add);
+                let uptime = i64::try_from(metrics.uptime_secs).unwrap_or(i64::MAX);
+                let procs = i64::from(metrics.procs);
+                // 按 (node_id, ts) 去重:同秒已存在则不插入
+                let res = sqlx::query!(
+                    "INSERT INTO metrics(node_id, ts, cpu_pct, load1, load5, load15,
+                            mem_total, mem_used, mem_available, swap_total, swap_used,
+                            disk_total, disk_used, disk_read_bps, disk_write_bps,
+                            net_rx_bps, net_tx_bps, uptime_secs, procs, detail)
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20
+                     WHERE NOT EXISTS (SELECT 1 FROM metrics WHERE node_id = ?1 AND ts = ?2)",
+                    node_id, ts, metrics.cpu_pct, metrics.load1, metrics.load5, metrics.load15,
+                    mem_total, mem_used, mem_avail, swap_total, swap_used,
+                    disk_total, disk_used, dr, dw, rx, tx, uptime, procs, detail
+                )
+                .execute(&st.db)
+                .await;
+                if let Ok(r) = res {
+                    inserted = inserted.saturating_add(r.rows_affected());
+                }
+            }
+            if inserted > 0 {
+                tracing::info!(node_id, inserted, "断线补传入库");
+            }
+            Ok(())
+        }
     }
 }

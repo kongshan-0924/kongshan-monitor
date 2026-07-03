@@ -301,38 +301,60 @@ pub async fn detail(
 }
 
 /// GET /api/nodes/{id}/metrics?secs=3600 — 历史曲线(自动按桶聚合)。
+/// 近期(≤2 天)查原始 metrics 表(高分辨率);更长范围查小时聚合表 metrics_rollup
+/// (原始表清理后仍可看长历史,且避免对大表全量扫描)。
 pub async fn history(
     State(st): State<AppState>,
     _user: SessionUser,
     Path(id): Path<i64>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let secs = q.secs.clamp(300, 30 * 86400);
+    let secs = q.secs.clamp(300, 366 * 86400);
     let since = unix_now().saturating_sub(secs);
     // 目标 ~360 个点;步长向上取整到至少 1 秒
     let step = (secs / 360).max(1);
-    let rows = sqlx::query!(
-        r#"SELECT (ts / ?1) * ?1 as "t!: i64",
-                  AVG(cpu_pct) as "cpu!: f64",
-                  AVG(mem_used) as "mem_used!: f64", MAX(mem_total) as "mem_total!: i64",
-                  AVG(net_rx_bps) as "rx!: f64", AVG(net_tx_bps) as "tx!: f64",
-                  AVG(disk_read_bps) as "dr!: f64", AVG(disk_write_bps) as "dw!: f64",
-                  AVG(load1) as "load1!: f64"
-           FROM metrics WHERE node_id = ?2 AND ts >= ?3
-           GROUP BY 1 ORDER BY 1"#,
-        step,
-        id,
-        since
-    )
-    .fetch_all(&st.db)
-    .await?;
 
-    let points: Vec<Value> = rows
-        .into_iter()
-        .map(|r| {
-            json!([r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1])
-        })
-        .collect();
+    // 阈值:超过 2 天用小时聚合表
+    let points: Vec<Value> = if secs > 2 * 86400 {
+        let bstep = step.max(3600); // 聚合表最细为小时
+        let rows = sqlx::query!(
+            r#"SELECT (hour_ts / ?1) * ?1 as "t!: i64",
+                      AVG(cpu_avg) as "cpu!: f64",
+                      AVG(mem_used_avg) as "mem_used!: f64", MAX(mem_total_max) as "mem_total!: i64",
+                      AVG(net_rx_avg) as "rx!: f64", AVG(net_tx_avg) as "tx!: f64",
+                      AVG(disk_read_avg) as "dr!: f64", AVG(disk_write_avg) as "dw!: f64",
+                      AVG(load1_avg) as "load1!: f64"
+               FROM metrics_rollup WHERE node_id = ?2 AND hour_ts >= ?3
+               GROUP BY 1 ORDER BY 1"#,
+            bstep,
+            id,
+            since
+        )
+        .fetch_all(&st.db)
+        .await?;
+        rows.into_iter()
+            .map(|r| json!([r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1]))
+            .collect()
+    } else {
+        let rows = sqlx::query!(
+            r#"SELECT (ts / ?1) * ?1 as "t!: i64",
+                      AVG(cpu_pct) as "cpu!: f64",
+                      AVG(mem_used) as "mem_used!: f64", MAX(mem_total) as "mem_total!: i64",
+                      AVG(net_rx_bps) as "rx!: f64", AVG(net_tx_bps) as "tx!: f64",
+                      AVG(disk_read_bps) as "dr!: f64", AVG(disk_write_bps) as "dw!: f64",
+                      AVG(load1) as "load1!: f64"
+               FROM metrics WHERE node_id = ?2 AND ts >= ?3
+               GROUP BY 1 ORDER BY 1"#,
+            step,
+            id,
+            since
+        )
+        .fetch_all(&st.db)
+        .await?;
+        rows.into_iter()
+            .map(|r| json!([r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1]))
+            .collect()
+    };
     Ok(Json(json!({ "step": step, "points": points })))
 }
 

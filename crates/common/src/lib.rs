@@ -117,6 +117,9 @@ pub enum AgentToServer {
     Hello { host: HostInfo },
     /// 周期指标上报。
     Metrics { metrics: Metrics },
+    /// 断线期间缓冲点的补传(每点携带其原始 ts)。server 按时间窗校验并按
+    /// (node_id, ts) 去重入库,不更新 last_seen、不推实时、不触发告警。
+    Backfill { points: Vec<Metrics> },
 }
 
 /// server → agent 下行消息:**严格白名单**。
