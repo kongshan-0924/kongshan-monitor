@@ -2,9 +2,9 @@
 //! 单项失败降级为默认值,整次采样永不失败(规范第 5 节)。
 
 use crate::parsers::{
-    cpu_percent, parse_cpu_total, parse_diskstats, parse_loadavg, parse_meminfo, parse_mounts,
-    parse_netdev, parse_os_release, parse_pid_comm, parse_pid_stat, parse_tcp_count,
-    parse_thermal_millideg, parse_uptime, rate_bps, CpuTimes, DiskStats,
+    cpu_percent, parse_cpu_per_core, parse_cpu_total, parse_diskstats, parse_loadavg,
+    parse_meminfo, parse_mounts, parse_netdev, parse_os_release, parse_pid_comm, parse_pid_stat,
+    parse_tcp_count, parse_thermal_millideg, parse_uptime, rate_bps, CpuTimes, DiskStats,
 };
 use outpost_common::{DiskUsage, HostInfo, Metrics, NetIf, ProcInfo};
 use std::collections::HashMap;
@@ -32,6 +32,8 @@ struct Prev {
     cpu_total: u64,
     /// 受监控进程名 -> 上次累计 CPU jiffies。
     proc_jiffies: HashMap<String, u64>,
+    /// 上次每核 CPU 时间(用于每核使用率)。
+    cpu_cores: Vec<CpuTimes>,
 }
 
 pub struct Sampler {
@@ -81,7 +83,9 @@ impl Sampler {
     #[must_use]
     pub fn sample(&mut self) -> Metrics {
         let now = Instant::now();
-        let cpu_now = read_file("/proc/stat").and_then(|s| parse_cpu_total(&s));
+        let stat = read_file("/proc/stat");
+        let cpu_now = stat.as_deref().and_then(parse_cpu_total);
+        let cpu_cores_now = stat.as_deref().map(parse_cpu_per_core).unwrap_or_default();
         let mem = read_file("/proc/meminfo").map(|s| parse_meminfo(&s)).unwrap_or_default();
         let load = read_file("/proc/loadavg").and_then(|s| parse_loadavg(&s));
         let uptime = read_file("/proc/uptime").map_or(0, |s| parse_uptime(&s));
@@ -92,10 +96,22 @@ impl Sampler {
         let cpu_total_now = cpu_now.map_or(0, |c| c.total);
         let proc_now = self.scan_processes();
 
-        let (cpu_pct, nets, disk_read_bps, disk_write_bps, disk_read_iops, disk_write_iops, procs_watch) =
+        let (cpu_pct, nets, disk_read_bps, disk_write_bps, disk_read_iops, disk_write_iops, procs_watch, cpu_per_core) =
             match (&self.prev, cpu_now) {
                 (Some(p), Some(c)) => {
                     let dt = now.duration_since(p.at).as_secs_f64();
+                    // 每核使用率:核数一致才计算(热插拔时跳过本轮)
+                    let per_core: Vec<f64> = if !cpu_cores_now.is_empty()
+                        && p.cpu_cores.len() == cpu_cores_now.len()
+                    {
+                        p.cpu_cores
+                            .iter()
+                            .zip(&cpu_cores_now)
+                            .map(|(pc, cc)| cpu_percent(*pc, *cc))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     let mut ifs: Vec<NetIf> = net_now
                         .iter()
                         .map(|(name, &(rx, tx))| {
@@ -136,9 +152,10 @@ impl Sampler {
                         rate_bps(p.disk.read_ops, disk_now.read_ops, dt),
                         rate_bps(p.disk.write_ops, disk_now.write_ops, dt),
                         procs_w,
+                        per_core,
                     )
                 }
-                _ => (0.0, Vec::new(), 0, 0, 0, 0, Vec::new()),
+                _ => (0.0, Vec::new(), 0, 0, 0, 0, Vec::new(), Vec::new()),
             };
 
         if let Some(c) = cpu_now {
@@ -150,6 +167,7 @@ impl Sampler {
                 disk: disk_now,
                 cpu_total: cpu_total_now,
                 proc_jiffies,
+                cpu_cores: cpu_cores_now,
             });
         }
 
@@ -176,6 +194,7 @@ impl Sampler {
             disk_read_iops,
             disk_write_iops,
             procs_watch,
+            cpu_per_core,
         }
     }
 
@@ -277,7 +296,17 @@ fn collect_disks() -> Vec<DiskUsage> {
             if total == 0 {
                 continue;
             }
-            out.push(DiskUsage { mount: mnt, fs, total, used: total.saturating_sub(free) });
+            // inode:f_files 总数,f_ffree 空闲(部分文件系统如 tmpfs 可能为 0)
+            let inodes_total = sv.f_files;
+            let inodes_used = inodes_total.saturating_sub(sv.f_ffree);
+            out.push(DiskUsage {
+                mount: mnt,
+                fs,
+                total,
+                used: total.saturating_sub(free),
+                inodes_total,
+                inodes_used,
+            });
         }
         if out.len() >= outpost_common::MAX_DISKS {
             break;

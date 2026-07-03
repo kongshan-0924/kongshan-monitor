@@ -278,6 +278,38 @@ pub fn rate_bps(prev: u64, cur: u64, dt_secs: f64) -> u64 {
     bps
 }
 
+/// 解析每核 CPU 时间(`cpu0`, `cpu1`, …),按核序返回;排除聚合行 `cpu `。
+#[must_use]
+pub fn parse_cpu_per_core(stat: &str) -> Vec<CpuTimes> {
+    let mut out = Vec::new();
+    for line in stat.lines() {
+        let Some(rest) = line.strip_prefix("cpu") else { continue };
+        // 仅接受 "cpuN"(N 为数字);聚合行 "cpu " 的 rest 以空格开头,跳过
+        if !rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            continue;
+        }
+        let mut fields = rest.split_whitespace().skip(1); // 跳过核号
+        let mut vals = [0u64; 8];
+        let mut ok = true;
+        for v in &mut vals {
+            match fields.next().and_then(|s| s.parse().ok()) {
+                Some(x) => *v = x,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let idle = vals.get(3).copied().unwrap_or(0).saturating_add(vals.get(4).copied().unwrap_or(0));
+        let total = vals.iter().fold(0u64, |a, b| a.saturating_add(*b));
+        out.push(CpuTimes { idle, total });
+    }
+    out
+}
+
 /// CPU 使用率(%):两次 jiffies 快照差。
 #[must_use]
 pub fn cpu_percent(prev: CpuTimes, cur: CpuTimes) -> f64 {

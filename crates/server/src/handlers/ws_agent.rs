@@ -74,6 +74,7 @@ fn build_detail(m: &outpost_common::Metrics) -> (String, i64, i64) {
     let detail = json!({
         "disks": m.disks.iter().map(|d| json!({
             "mount": d.mount, "fs": d.fs, "total": d.total, "used": d.used,
+            "inodes_total": d.inodes_total, "inodes_used": d.inodes_used,
         })).collect::<Vec<_>>(),
         "nets": m.nets.iter().map(|n| json!({
             "name": n.name, "rx_bps": n.rx_bps, "tx_bps": n.tx_bps,
@@ -83,6 +84,7 @@ fn build_detail(m: &outpost_common::Metrics) -> (String, i64, i64) {
         "tcp_conns": m.tcp_conns,
         "disk_read_iops": m.disk_read_iops,
         "disk_write_iops": m.disk_write_iops,
+        "cpu_per_core": m.cpu_per_core,
         "procs_watch": m.procs_watch.iter().map(|p| json!({
             "name": p.name, "running": p.running, "count": p.count,
             "cpu_pct": p.cpu_pct, "rss": p.rss,

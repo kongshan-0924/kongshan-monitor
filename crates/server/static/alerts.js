@@ -5,7 +5,7 @@
 const METRIC_LABEL = {
   cpu_pct: "CPU 使用率", mem_pct: "内存使用率", disk_pct: "磁盘使用率",
   swap_pct: "Swap 使用率", load1: "1 分钟负载", cpu_temp: "CPU 温度",
-  tcp_conns: "TCP 连接数", offline: "节点离线",
+  tcp_conns: "TCP 连接数", inode_pct: "inode 使用率", offline: "节点离线",
 };
 const CMP = { gt: ">", gte: "≥", lt: "<", lte: "≤" };
 const SEV_LABEL = { info: "信息", warning: "警告", critical: "严重" };

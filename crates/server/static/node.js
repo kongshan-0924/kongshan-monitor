@@ -66,7 +66,7 @@ function renderTables(detail) {
   const dt = $("#diskTbl");
   dt.replaceChildren();
   const dh = el("tr");
-  ["挂载点", "文件系统", "用量", "使用率"].forEach((h) => dh.appendChild(el("th", null, h)));
+  ["挂载点", "文件系统", "用量", "使用率", "inode"].forEach((h) => dh.appendChild(el("th", null, h)));
   dt.appendChild(dh);
   for (const d of (detail && detail.disks) || []) {
     const tr = el("tr");
@@ -74,6 +74,8 @@ function renderTables(detail) {
     tr.appendChild(el("td", null, d.fs));
     tr.appendChild(el("td", null, fmtBytes(d.used) + " / " + fmtBytes(d.total)));
     tr.appendChild(el("td", null, pct(d.used, d.total).toFixed(0) + "%"));
+    const it = d.inodes_total || 0;
+    tr.appendChild(el("td", null, it > 0 ? (pct(d.inodes_used || 0, it).toFixed(0) + "%") : "—"));
     dt.appendChild(tr);
   }
   const nt = $("#netTbl");
@@ -88,6 +90,29 @@ function renderTables(detail) {
     tr.appendChild(el("td", null, fmtBps(x.tx_bps)));
     tr.appendChild(el("td", null, fmtBytes(x.rx_bytes) + " / " + fmtBytes(x.tx_bytes)));
     nt.appendChild(tr);
+  }
+
+  // 每核 CPU(有数据才显示)
+  const ccard = $("#coreCard");
+  const cores = (detail && detail.cpu_per_core) || [];
+  if (ccard) {
+    ccard.classList.toggle("hidden", cores.length === 0);
+    const cb = $("#coreBars");
+    cb.replaceChildren();
+    cores.forEach((v, i) => {
+      const val = Math.max(0, Math.min(100, v || 0));
+      const item = el("div", "core-item");
+      item.appendChild(el("span", "core-lbl", "#" + i));
+      const track = el("div", "core-track");
+      const fill = el("div", "core-fill");
+      fill.style.width = val.toFixed(0) + "%";
+      if (val >= 90) fill.classList.add("hot");
+      else if (val >= 70) fill.classList.add("warm");
+      track.appendChild(fill);
+      item.appendChild(track);
+      item.appendChild(el("span", "core-val", val.toFixed(0) + "%"));
+      cb.appendChild(item);
+    });
   }
 
   // 受监控进程(仅在 agent 配置了 watch_processes 时有数据)

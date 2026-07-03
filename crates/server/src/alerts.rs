@@ -10,8 +10,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// 指标白名单。
-pub const METRICS: &[&str] =
-    &["cpu_pct", "mem_pct", "disk_pct", "swap_pct", "load1", "cpu_temp", "tcp_conns", "offline"];
+pub const METRICS: &[&str] = &[
+    "cpu_pct", "mem_pct", "disk_pct", "swap_pct", "load1", "cpu_temp", "tcp_conns", "inode_pct",
+    "offline",
+];
 /// 比较符白名单。
 pub const COMPARATORS: &[&str] = &["gt", "lt", "gte", "lte"];
 /// 渠道类型白名单。
@@ -120,6 +122,12 @@ fn metric_value(name: &str, m: &Metrics, disk_total: i64, disk_used: i64) -> Opt
         "load1" => Some(m.load1),
         "cpu_temp" => m.cpu_temp_c,
         "tcp_conns" => m.tcp_conns.map(f64::from),
+        "inode_pct" => m
+            .disks
+            .iter()
+            .filter(|d| d.inodes_total > 0)
+            .map(|d| pct(d.inodes_used as f64, d.inodes_total as f64))
+            .fold(None, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v)))),
         _ => None,
     }
 }
@@ -336,6 +344,7 @@ fn metric_label(m: &str) -> &'static str {
         "load1" => "1 分钟负载",
         "cpu_temp" => "CPU 温度(℃)",
         "tcp_conns" => "TCP 连接数",
+        "inode_pct" => "inode 使用率",
         "offline" => "在线状态",
         _ => "指标",
     }
@@ -569,6 +578,7 @@ mod tests {
             disk_write_bps: 0, nets: vec![], uptime_secs: 0, procs: 0,
             cpu_temp_c: Some(60.0), tcp_conns: Some(100),
             disk_read_iops: 0, disk_write_iops: 0, procs_watch: vec![],
+            cpu_per_core: vec![],
         }
     }
 

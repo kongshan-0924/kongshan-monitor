@@ -18,6 +18,8 @@ pub const MAX_WS_MESSAGE_BYTES: usize = 256 * 1024;
 /// 限制值:挂载点 / 网卡数量上限。
 pub const MAX_DISKS: usize = 16;
 pub const MAX_NETS: usize = 16;
+/// 每核 CPU 上报核数上限(超出截断,防超大机器消息膨胀)。
+pub const MAX_CORES: usize = 128;
 
 // ---------------------------------------------------------------------------
 // 协议类型
@@ -44,6 +46,11 @@ pub struct DiskUsage {
     pub fs: String,
     pub total: u64,
     pub used: u64,
+    /// inode 总数 / 已用(0 表示该文件系统不适用或未知)。
+    #[serde(default)]
+    pub inodes_total: u64,
+    #[serde(default)]
+    pub inodes_used: u64,
 }
 
 /// 单个网卡计数与速率。
@@ -107,6 +114,9 @@ pub struct Metrics {
     /// 受监控进程探测结果。
     #[serde(default)]
     pub procs_watch: Vec<ProcInfo>,
+    /// 每核 CPU 使用率(%);核数超过上限时截断。
+    #[serde(default)]
+    pub cpu_per_core: Vec<f64>,
 }
 
 /// agent → server 上行消息(强类型、拒绝未知字段)。
@@ -249,6 +259,9 @@ pub fn validate_and_clean_metrics(m: &mut Metrics) -> Result<(), &'static str> {
             return Err("disk size out of range");
         }
         d.used = d.used.min(d.total);
+        // inode 计数上限保护 + used ≤ total
+        d.inodes_total = d.inodes_total.min(1u64 << 40);
+        d.inodes_used = d.inodes_used.min(d.inodes_total);
     }
 
     m.nets.truncate(MAX_NETS);
@@ -278,6 +291,10 @@ pub fn validate_and_clean_metrics(m: &mut Metrics) -> Result<(), &'static str> {
         p.cpu_pct = if p.cpu_pct.is_finite() { p.cpu_pct.clamp(0.0, 100.0) } else { 0.0 };
         p.rss = p.rss.min(MAX_BYTES_VALUE);
         p.count = p.count.min(1_000_000);
+    }
+    m.cpu_per_core.truncate(MAX_CORES);
+    for c in &mut m.cpu_per_core {
+        *c = if c.is_finite() { c.clamp(0.0, 100.0) } else { 0.0 };
     }
     Ok(())
 }
@@ -314,6 +331,7 @@ mod tests {
             disk_read_iops: 0,
             disk_write_iops: 0,
             procs_watch: vec![],
+            cpu_per_core: vec![],
         }
     }
 
@@ -361,6 +379,8 @@ mod tests {
                 fs: "ext4".into(),
                 total: 10,
                 used: 20, // > total → clamp
+                inodes_total: 100,
+                inodes_used: 200, // > total → clamp
             });
         }
         validate_and_clean_metrics(&mut m3).unwrap();
