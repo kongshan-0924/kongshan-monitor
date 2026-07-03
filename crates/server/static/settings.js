@@ -45,6 +45,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const s = await api("GET", "/api/settings");
     $("#interval").value = s.report_interval_secs;
     $("#retention").value = s.retention_days;
+    if ($("#backupHours")) $("#backupHours").value = String(s.auto_backup_hours || 0);
+    if ($("#backupKeep")) $("#backupKeep").value = s.auto_backup_keep || 7;
     renderStatusState(s.status_enabled, s.status_url);
   } catch (_) {}
 
@@ -63,6 +65,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       await api("POST", "/api/settings", {
         report_interval_secs: parseInt($("#interval").value, 10),
         retention_days: parseInt($("#retention").value, 10),
+        auto_backup_hours: parseInt($("#backupHours").value, 10) || 0,
+        auto_backup_keep: parseInt($("#backupKeep").value, 10) || 7,
       });
       msg.textContent = "已保存 ✓";
       setTimeout(() => { msg.textContent = ""; }, 2000);
@@ -70,6 +74,28 @@ document.addEventListener("DOMContentLoaded", async () => {
       msg.textContent = err.error || "保存失败";
     }
   });
+
+  // 自动备份设置(与监控参数共用 /api/settings,提交全部 4 字段避免互相覆盖)
+  const bf = $("#backupForm");
+  if (bf) {
+    bf.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = $("#backupMsg");
+      msg.textContent = "";
+      try {
+        await api("POST", "/api/settings", {
+          report_interval_secs: parseInt($("#interval").value, 10),
+          retention_days: parseInt($("#retention").value, 10),
+          auto_backup_hours: parseInt($("#backupHours").value, 10) || 0,
+          auto_backup_keep: parseInt($("#backupKeep").value, 10) || 7,
+        });
+        msg.textContent = "已保存 ✓";
+        setTimeout(() => { msg.textContent = ""; }, 2000);
+      } catch (err) {
+        msg.textContent = err.error || "保存失败";
+      }
+    });
+  }
 
   $("#pwForm").addEventListener("submit", async (e) => {
     e.preventDefault();

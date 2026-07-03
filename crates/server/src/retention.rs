@@ -69,6 +69,59 @@ pub async fn run(st: AppState) {
         if let Err(e) = sqlx::query("PRAGMA incremental_vacuum(500)").execute(&st.db).await {
             tracing::warn!(error = %e, "incremental_vacuum 失败");
         }
+
+        auto_backup(&st).await;
+    }
+}
+
+/// 定时本地备份(轮转):按设置周期 VACUUM INTO 到 <db 目录>/backups,保留最近 N 份。
+async fn auto_backup(st: &AppState) {
+    let hours = crate::db::setting_i64(&st.db, "auto_backup_hours", 0, 0, 168).await;
+    if hours <= 0 {
+        return; // 关闭
+    }
+    let now = unix_now();
+    let last = crate::db::setting_i64(&st.db, "auto_backup_last", 0, 0, i64::MAX).await;
+    if now.saturating_sub(last) < hours.saturating_mul(3600) {
+        return;
+    }
+    let keep = usize::try_from(crate::db::setting_i64(&st.db, "auto_backup_keep", 7, 1, 90).await).unwrap_or(7);
+    let db_path = std::path::Path::new(&st.cfg.storage.db_path);
+    let Some(dir) = db_path.parent() else { return };
+    let bdir = dir.join("backups");
+    if let Err(e) = std::fs::create_dir_all(&bdir) {
+        tracing::error!(error = %e, "创建备份目录失败");
+        return;
+    }
+    let target = bdir.join(format!("outpost-{now}.db"));
+    let Some(target_str) = target.to_str() else { return };
+    // 路径由服务端派生(无用户输入),仍对单引号转义以防万一
+    let q = format!("VACUUM INTO '{}'", target_str.replace('\'', "''"));
+    match sqlx::query(&q).execute(&st.db).await {
+        Ok(_) => {
+            let _ = crate::db::set_setting(&st.db, "auto_backup_last", &now.to_string()).await;
+            tracing::info!(path = target_str, "自动备份完成");
+            rotate_backups(&bdir, keep);
+        }
+        Err(e) => tracing::error!(error = %e, "自动备份失败"),
+    }
+}
+
+/// 轮转:文件名含 unix 时间戳,字典序即时间序;删除超出保留数的最旧份。
+fn rotate_backups(dir: &std::path::Path, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<std::path::PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("outpost-") && n.ends_with(".db"))
+        })
+        .collect();
+    files.sort();
+    let remove = files.len().saturating_sub(keep);
+    for old in files.iter().take(remove) {
+        let _ = std::fs::remove_file(old);
     }
 }
 

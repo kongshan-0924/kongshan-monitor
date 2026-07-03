@@ -35,12 +35,24 @@ fn csv_cell(s: &str) -> String {
 pub struct SettingsReq {
     report_interval_secs: i64,
     retention_days: i64,
+    /// 自动本地备份周期(小时,0=关闭)
+    #[serde(default)]
+    auto_backup_hours: i64,
+    /// 自动备份保留份数
+    #[serde(default = "default_keep")]
+    auto_backup_keep: i64,
+}
+
+fn default_keep() -> i64 {
+    7
 }
 
 /// GET /api/settings
 pub async fn get(State(st): State<AppState>, _user: SessionUser) -> Result<Json<Value>, AppError> {
     let interval = setting_i64(&st.db, "report_interval_secs", 5, 1, 3600).await;
     let retention = setting_i64(&st.db, "retention_days", 30, 1, 3650).await;
+    let backup_hours = setting_i64(&st.db, "auto_backup_hours", 0, 0, 168).await;
+    let backup_keep = setting_i64(&st.db, "auto_backup_keep", 7, 1, 90).await;
     let slug = crate::db::setting_str(&st.db, "status_slug").await;
     let status_url = if slug.is_empty() {
         String::new()
@@ -50,6 +62,8 @@ pub async fn get(State(st): State<AppState>, _user: SessionUser) -> Result<Json<
     Ok(Json(json!({
         "report_interval_secs": interval,
         "retention_days": retention,
+        "auto_backup_hours": backup_hours,
+        "auto_backup_keep": backup_keep,
         "status_enabled": !slug.is_empty(),
         "status_url": status_url,
     })))
@@ -69,8 +83,16 @@ pub async fn set(
     if !(1..=3650).contains(&req.retention_days) {
         return Err(AppError::bad("数据保留需在 1~3650 天之间"));
     }
+    if !(0..=168).contains(&req.auto_backup_hours) {
+        return Err(AppError::bad("自动备份周期需在 0(关闭)~168 小时"));
+    }
+    if !(1..=90).contains(&req.auto_backup_keep) {
+        return Err(AppError::bad("备份保留份数需在 1~90"));
+    }
     set_setting(&st.db, "report_interval_secs", &req.report_interval_secs.to_string()).await?;
     set_setting(&st.db, "retention_days", &req.retention_days.to_string()).await?;
+    set_setting(&st.db, "auto_backup_hours", &req.auto_backup_hours.to_string()).await?;
+    set_setting(&st.db, "auto_backup_keep", &req.auto_backup_keep.to_string()).await?;
 
     let interval = u32::try_from(req.report_interval_secs).unwrap_or(5);
     let _ = st.interval_tx.send(interval);
