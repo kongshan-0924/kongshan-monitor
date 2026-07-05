@@ -26,20 +26,22 @@
 <main class="wrap">
  <div class="settings-layout">
   <aside class="settings-nav" id="setNav">
-    <a data-target="s-monitor" class="active">监控参数</a>
+    <a data-target="s-monitor" class="active admin-only">监控参数</a>
+    <a data-target="s-network" class="admin-only">对外访问地址</a>
     <a data-target="s-appearance">外观主题</a>
     <a data-target="s-password">修改密码</a>
     <a data-target="s-2fa">两步验证</a>
     <a data-target="s-sessions">会话设备</a>
-    <a data-target="s-backup">数据备份</a>
-    <a data-target="s-apitoken">API Token</a>
+    <a data-target="s-backup" class="admin-only">数据备份</a>
+    <a data-target="s-apitoken" class="admin-only">API Token</a>
     <a data-target="s-upgrade">Agent 升级</a>
-    <a data-target="s-status">公开状态页</a>
+    <a data-target="s-status" class="admin-only">公开状态页</a>
+    <a data-target="s-users" class="admin-only">账号管理</a>
     <a data-target="s-audit">审计日志</a>
   </aside>
 
   <div class="settings-content">
-    <section class="card pad show" id="s-monitor">
+    <section class="card pad show admin-only" id="s-monitor">
       <h3>监控参数</h3>
       <form id="sysForm" class="form">
         <label>上报间隔(秒,1~3600) <input id="interval" type="number" min="1" max="3600" required></label>
@@ -47,6 +49,22 @@
         <p class="hint subtle">间隔变更会实时推送给在线节点;历史数据每小时自动按保留期清理。</p>
         <button class="btn primary" type="submit">保存</button>
         <span id="sysMsg" class="msg"></span>
+      </form>
+    </section>
+
+    <section class="card pad admin-only" id="s-network">
+      <h3>对外访问地址</h3>
+      <p class="hint subtle">用于浏览器 Origin/CSRF 校验、一键安装命令与状态页链接的渲染。改动<strong>立即生效,无需重启</strong>;
+        请确保填写你实际用来访问面板的地址(反代域名请连端口一起填),否则可能导致 CSRF 校验拒绝或安装命令生成错误地址。</p>
+      <form id="netForm" class="form">
+        <label>对外访问地址(必须 https://,含端口)
+          <input id="publicUrl" type="text" maxlength="200" required placeholder="https://example.com:18081">
+        </label>
+        <label>额外允许的 Origin(可选,每行一个,例如同时用域名+IP 访问时)
+          <textarea id="extraOrigins" rows="3" maxlength="4000" placeholder="https://192.168.1.10:25510"></textarea>
+        </label>
+        <button class="btn primary" type="submit">保存</button>
+        <span id="netMsg" class="msg"></span>
       </form>
     </section>
 
@@ -108,7 +126,7 @@
       <button id="logoutAllBtn" class="btn warn" style="margin-top:12px">使全部会话失效</button>
     </section>
 
-    <section class="card pad" id="s-backup">
+    <section class="card pad admin-only" id="s-backup">
       <h3>数据备份</h3>
       <p class="hint subtle">下载数据库一致性快照。恢复:停止服务后用备份替换 <code>outpost.db</code> 再启动(详见 README)。</p>
       <button id="backupBtn" class="btn primary">下载备份</button>
@@ -130,7 +148,7 @@
       </form>
     </section>
 
-    <section class="card pad" id="s-apitoken">
+    <section class="card pad admin-only" id="s-apitoken">
       <div class="row-head"><h3>只读 API Token</h3><button id="addTokenBtn" class="btn primary sm">新建 Token</button></div>
       <p class="hint subtle">用于外部系统只读拉取:Prometheus <code>/metrics</code>、<code>/api/v1/nodes</code>、历史导出。请求头 <code>Authorization: Bearer opk_...</code>。明文仅创建时显示一次。</p>
       <div id="newToken" class="hidden"><p class="hint">已创建,请立即复制保存:</p><pre id="tokenVal" class="cmd"></pre></div>
@@ -144,7 +162,7 @@
       <button id="copyUpgrade" class="btn primary sm">复制命令</button>
     </section>
 
-    <section class="card pad" id="s-status">
+    <section class="card pad admin-only" id="s-status">
       <h3>公开状态页</h3>
       <p class="hint subtle">开启后生成公开链接,展示<strong>脱敏</strong>健康度(仅名称/分组/在线/CPU/内存/磁盘,不含 IP、主机名、备注)。默认关闭。</p>
       <div id="statusOff">
@@ -165,6 +183,13 @@
       </div>
     </section>
 
+    <section class="card pad admin-only" id="s-users">
+      <div class="row-head"><h3>账号管理</h3><button id="addUserBtn" class="btn primary sm">新建账号</button></div>
+      <p class="hint subtle">轻量 RBAC:<b>admin</b> 可管理全部功能;<b>viewer</b>(只读观察者)仅能查看监控数据,
+        无法新增/编辑/删除节点、规则、渠道、设置等。至少保留一个 admin 账号。</p>
+      <table class="tbl" id="userTbl"></table>
+    </section>
+
     <section class="card pad" id="s-audit">
       <div class="row-head"><h3>审计日志(最近 100 条)</h3><button id="auditExportBtn" class="btn ghost sm">导出 CSV</button></div>
       <table class="tbl" id="auditTbl"></table>
@@ -172,6 +197,25 @@
   </div>
  </div>
 </main>
+
+<dialog id="userDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="userForm">
+    <h3>新建账号</h3>
+    <label>用户名(3~32 位,字母数字与 _.-) <input id="uName" type="text" maxlength="32" required autocomplete="off"></label>
+    <label>初始密码(≥10 位,含字母和数字) <input id="uPass" type="password" maxlength="128" required autocomplete="new-password"></label>
+    <label>角色
+      <select id="uRole">
+        <option value="viewer" selected>viewer(只读观察者)</option>
+        <option value="admin">admin(完全管理)</option>
+      </select>
+    </label>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn ghost" formnovalidate>取消</button>
+      <button class="btn primary" type="submit">创建</button>
+    </div>
+    <div id="userMsg" class="msg err"></div>
+  </form>
+</dialog>
 
 <script src="/static/app.js?v=__V__"></script>
 <script src="/static/settings.js?v=__V__"></script>

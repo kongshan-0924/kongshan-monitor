@@ -123,8 +123,11 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-# AF_UNIX 供可选的 systemd 服务状态探测(systemctl is-active 走本地 UNIX socket);
-# 仅当配置 watch_services 时才会用到,agent 无 capability、只读查询、不执行控制命令。
+# AF_UNIX 供两个可选的只读探测使用本地 UNIX socket:
+#  - watch_services:systemctl is-active 经 D-Bus;
+#  - docker_stats:直连 /var/run/docker.sock(需 agent 运行账号在 docker 组,等效 root,
+#    默认关闭,请自行评估后再开启,见 README)。
+# 均只读查询、不执行控制命令。
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 AmbientCapabilities=

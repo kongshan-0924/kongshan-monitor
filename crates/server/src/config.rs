@@ -181,14 +181,13 @@ impl Config {
         // 本地开发例外:回环监听 + 关闭 Secure Cookie 时,允许 http:// 便于本机预览。
         // 生产(非回环或启用 Secure Cookie)不受影响,仍强制 https。
         let dev_local = addr.ip().is_loopback() && !self.security.cookie_secure;
-        let scheme_ok = |u: &str| u.starts_with("https://") || (dev_local && u.starts_with("http://"));
-        if !scheme_ok(&self.server.public_url) {
+        if !scheme_ok(&self.server.public_url, dev_local) {
             return Err(ConfigError::Invalid(
                 "server.public_url 必须为 https://(本机回环预览可用 http:// 并关闭 security.cookie_secure)".into(),
             ));
         }
         for o in &self.server.extra_origins {
-            if !scheme_ok(o) {
+            if !scheme_ok(o, dev_local) {
                 return Err(ConfigError::Invalid("extra_origins 必须为 https://(本机预览可 http://)".into()));
             }
         }
@@ -231,22 +230,6 @@ impl Config {
             .collect()
     }
 
-    /// public_url 的 Origin 形式(scheme://host[:port],去尾部斜杠与路径)。
-    #[must_use]
-    pub fn public_origin(&self) -> String {
-        origin_of(&self.server.public_url)
-    }
-
-    /// 全部允许的 Origin。
-    #[must_use]
-    pub fn allowed_origins(&self) -> Vec<String> {
-        let mut v = vec![self.public_origin()];
-        for o in &self.server.extra_origins {
-            v.push(origin_of(o));
-        }
-        v
-    }
-
     /// 会话 Cookie 名(Secure 时用 __Host- 前缀获得浏览器级保护)。
     #[must_use]
     pub fn cookie_name(&self) -> &'static str {
@@ -256,9 +239,22 @@ impl Config {
             "op_session"
         }
     }
+
+    /// 是否处于"本机回环 + 关闭 Secure Cookie"的开发预览例外(允许 http:// 的 public_url)。
+    #[must_use]
+    pub fn dev_local(&self) -> bool {
+        self.listen_addr().ip().is_loopback() && !self.security.cookie_secure
+    }
 }
 
-fn origin_of(url: &str) -> String {
+/// URL scheme 校验:必须 https://,`dev_local` 例外时也允许 http://(本机回环预览)。
+/// 供启动时 config.toml 校验与运行时设置页动态修改校验共用。
+#[must_use]
+pub fn scheme_ok(url: &str, dev_local: bool) -> bool {
+    url.starts_with("https://") || (dev_local && url.starts_with("http://"))
+}
+
+pub(crate) fn origin_of(url: &str) -> String {
     // 取 scheme://authority(保留 scheme;支持 https 与本机预览的 http)
     let (scheme, rest) = url.strip_prefix("https://").map_or_else(
         || url.strip_prefix("http://").map_or(("https", url), |r| ("http", r)),
@@ -294,9 +290,7 @@ mod tests {
 
     #[test]
     fn origin_extraction() {
-        let mut c = Config::default();
-        c.server.public_url = "https://1.2.3.4:25510/some/path".into();
-        assert_eq!(c.public_origin(), "https://1.2.3.4:25510");
+        assert_eq!(origin_of("https://1.2.3.4:25510/some/path"), "https://1.2.3.4:25510");
     }
 
     #[test]

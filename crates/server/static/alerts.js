@@ -9,6 +9,11 @@ const METRIC_LABEL = {
   services_down: "异常服务数", offline: "节点离线",
 };
 const CMP = { gt: ">", gte: "≥", lt: "<", lte: "≤" };
+const ROC_METRICS = ["cpu_pct", "mem_pct", "disk_pct", "swap_pct", "load1"];
+function fmtRocWindow(secs) {
+  if (secs >= 3600 && secs % 3600 === 0) return (secs / 3600) + " 小时";
+  return Math.round(secs / 60) + " 分钟";
+}
 const SEV_LABEL = { info: "信息", warning: "警告", critical: "严重" };
 const SEV_CLASS = { info: "sev-info", warning: "sev-warn", critical: "sev-crit" };
 
@@ -49,69 +54,77 @@ async function loadRules(nodes) {
   const d = await api("GET", "/api/alerts/rules");
   const tbl = $("#ruleTbl");
   tbl.replaceChildren();
-  const head = el("tr"); th(head, ["名称", "级别", "条件", "持续", "范围", "状态", "操作"]); tbl.appendChild(head);
+  const admin = !isViewer();
+  const head = el("tr"); th(head, ["名称", "级别", "条件", "持续", "范围", "状态"].concat(admin ? ["操作"] : [])); tbl.appendChild(head);
   for (const r of d.items) {
     const tr = el("tr");
     tr.appendChild(el("td", null, r.name));
     const sevTd = el("td"); sevTd.appendChild(sevBadge(r.severity || "warning")); tr.appendChild(sevTd);
-    const cond = r.metric === "offline"
-      ? "离线"
-      : METRIC_LABEL[r.metric] + " " + (CMP[r.comparator] || ">") + " " + r.threshold;
+    let cond;
+    if (r.metric === "offline") cond = "离线";
+    else if (r.comparator === "roc") cond = METRIC_LABEL[r.metric] + " 变化 ≥ " + r.threshold + "(" + fmtRocWindow(r.roc_window_secs) + "内)";
+    else cond = METRIC_LABEL[r.metric] + " " + (CMP[r.comparator] || ">") + " " + r.threshold;
     tr.appendChild(el("td", null, cond));
     tr.appendChild(el("td", null, r.duration_secs + "s"));
     tr.appendChild(el("td", null, r.node_name || "所有节点"));
     const stTd = el("td");
     stTd.appendChild(el("span", "pill " + (r.enabled ? "on" : "off"), r.enabled ? "启用" : "停用"));
     tr.appendChild(stTd);
-    const ops = el("td");
-    const tog = el("button", "btn ghost xs", r.enabled ? "停用" : "启用");
-    tog.addEventListener("click", async () => { await api("POST", "/api/alerts/rules/" + r.id + "/toggle"); loadRules(nodes); });
-    const del = el("button", "btn danger xs", "删除");
-    del.addEventListener("click", async () => {
-      if (!confirm("删除规则「" + r.name + "」?")) return;
-      await api("DELETE", "/api/alerts/rules/" + r.id); loadRules(nodes);
-    });
-    ops.appendChild(tog); ops.appendChild(del); tr.appendChild(ops);
+    if (admin) {
+      const ops = el("td");
+      const tog = el("button", "btn ghost xs", r.enabled ? "停用" : "启用");
+      tog.addEventListener("click", async () => { await api("POST", "/api/alerts/rules/" + r.id + "/toggle"); loadRules(nodes); });
+      const del = el("button", "btn danger xs", "删除");
+      del.addEventListener("click", async () => {
+        if (!confirm("删除规则「" + r.name + "」?")) return;
+        await api("DELETE", "/api/alerts/rules/" + r.id); loadRules(nodes);
+      });
+      ops.appendChild(tog); ops.appendChild(del); tr.appendChild(ops);
+    }
     tbl.appendChild(tr);
   }
-  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有规则,点「新增规则」开始"); td.colSpan = 7; tr.appendChild(td); tbl.appendChild(tr); }
+  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", admin ? "还没有规则,点「新增规则」开始" : "还没有规则"); td.colSpan = admin ? 7 : 6; tr.appendChild(td); tbl.appendChild(tr); }
 }
 
 async function loadChannels() {
   const d = await api("GET", "/api/alerts/channels");
   const tbl = $("#chanTbl");
   tbl.replaceChildren();
-  const head = el("tr"); th(head, ["名称", "类型", "地址", "接收级别", "操作"]); tbl.appendChild(head);
+  const admin = !isViewer();
+  const head = el("tr"); th(head, ["名称", "类型", "地址", "接收级别"].concat(admin ? ["操作"] : [])); tbl.appendChild(head);
   for (const c of d.items) {
     const tr = el("tr");
     tr.appendChild(el("td", null, c.name));
     tr.appendChild(el("td", null, c.kind));
     tr.appendChild(el("td", null, c.url));
     tr.appendChild(el("td", null, "≥ " + (SEV_LABEL[c.min_severity] || c.min_severity || "信息")));
-    const ops = el("td");
-    const test = el("button", "btn ghost xs", "测试");
-    test.addEventListener("click", async () => {
-      test.disabled = true; test.textContent = "发送中…";
-      try { await api("POST", "/api/alerts/channels/" + c.id + "/test"); alert("测试通知已发送成功 ✅"); }
-      catch (e) { alert("测试失败:" + (e.error || "")); }
-      finally { test.disabled = false; test.textContent = "测试"; }
-    });
-    const del = el("button", "btn danger xs", "删除");
-    del.addEventListener("click", async () => {
-      if (!confirm("删除渠道「" + c.name + "」?")) return;
-      await api("DELETE", "/api/alerts/channels/" + c.id); loadChannels();
-    });
-    ops.appendChild(test); ops.appendChild(del); tr.appendChild(ops);
+    if (admin) {
+      const ops = el("td");
+      const test = el("button", "btn ghost xs", "测试");
+      test.addEventListener("click", async () => {
+        test.disabled = true; test.textContent = "发送中…";
+        try { await api("POST", "/api/alerts/channels/" + c.id + "/test"); alert("测试通知已发送成功 ✅"); }
+        catch (e) { alert("测试失败:" + (e.error || "")); }
+        finally { test.disabled = false; test.textContent = "测试"; }
+      });
+      const del = el("button", "btn danger xs", "删除");
+      del.addEventListener("click", async () => {
+        if (!confirm("删除渠道「" + c.name + "」?")) return;
+        await api("DELETE", "/api/alerts/channels/" + c.id); loadChannels();
+      });
+      ops.appendChild(test); ops.appendChild(del); tr.appendChild(ops);
+    }
     tbl.appendChild(tr);
   }
-  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有通知渠道"); td.colSpan = 5; tr.appendChild(td); tbl.appendChild(tr); }
+  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有通知渠道"); td.colSpan = admin ? 5 : 4; tr.appendChild(td); tbl.appendChild(tr); }
 }
 
 async function loadSilences() {
   const d = await api("GET", "/api/alerts/silences");
   const tbl = $("#silenceTbl");
   tbl.replaceChildren();
-  const head = el("tr"); th(head, ["状态", "节点", "规则", "原因", "结束于", "操作"]); tbl.appendChild(head);
+  const admin = !isViewer();
+  const head = el("tr"); th(head, ["状态", "节点", "规则", "原因", "结束于"].concat(admin ? ["操作"] : [])); tbl.appendChild(head);
   for (const s of d.items) {
     const tr = el("tr");
     tr.appendChild(el("td", null, s.active ? "生效中" : "未开始"));
@@ -119,13 +132,15 @@ async function loadSilences() {
     tr.appendChild(el("td", null, s.rule_id ? (s.rule_name || ("#" + s.rule_id)) : "所有规则"));
     tr.appendChild(el("td", null, s.reason || "—"));
     tr.appendChild(el("td", null, fmtTime(s.end_ts)));
-    const ops = el("td");
-    const del = el("button", "btn danger xs", "结束");
-    del.addEventListener("click", async () => { await api("DELETE", "/api/alerts/silences/" + s.id); loadSilences(); });
-    ops.appendChild(del); tr.appendChild(ops);
+    if (admin) {
+      const ops = el("td");
+      const del = el("button", "btn danger xs", "结束");
+      del.addEventListener("click", async () => { await api("DELETE", "/api/alerts/silences/" + s.id); loadSilences(); });
+      ops.appendChild(del); tr.appendChild(ops);
+    }
     tbl.appendChild(tr);
   }
-  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "当前没有静默窗口"); td.colSpan = 6; tr.appendChild(td); tbl.appendChild(tr); }
+  if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "当前没有静默窗口"); td.colSpan = admin ? 6 : 5; tr.appendChild(td); tbl.appendChild(tr); }
 }
 
 function fillNodeSelect(sel, nodes) {
@@ -137,6 +152,7 @@ function fillNodeSelect(sel, nodes) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  await myRole();
   let nodes = [];
   try {
     const nd = await api("GET", "/api/nodes");
@@ -160,24 +176,38 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (e) { $("#renotifyMsg").textContent = e.error || "保存失败"; }
   });
 
-  // 指标为离线时隐藏阈值行
-  $("#rMetric").addEventListener("change", () => {
-    $("#threshRow").classList.toggle("hidden", $("#rMetric").value === "offline");
-  });
+  // 指标为离线时隐藏阈值行;比较符为变化率时显示窗口选择,并将指标限定为支持的核心 5 项
+  function syncRuleForm() {
+    const metric = $("#rMetric").value;
+    const isRoc = $("#rComparator").value === "roc";
+    $("#threshRow").classList.toggle("hidden", metric === "offline");
+    $("#rocWindowRow").classList.toggle("hidden", !isRoc);
+    $("#rThresholdLabel").firstChild.textContent = isRoc ? "变化幅度阈值 " : "阈值 ";
+    for (const opt of $("#rMetric").options) {
+      opt.disabled = isRoc && !ROC_METRICS.includes(opt.value);
+    }
+    if (isRoc && !ROC_METRICS.includes(metric)) $("#rMetric").value = "cpu_pct";
+  }
+  $("#rMetric").addEventListener("change", syncRuleForm);
+  $("#rComparator").addEventListener("change", syncRuleForm);
 
-  $("#addRuleBtn").addEventListener("click", () => { $("#ruleMsg").textContent = ""; $("#ruleDlg").showModal(); });
+  $("#addRuleBtn").addEventListener("click", () => {
+    $("#ruleMsg").textContent = ""; $("#ruleForm").reset(); syncRuleForm(); $("#ruleDlg").showModal();
+  });
   $("#ruleForm").addEventListener("submit", async (e) => {
     if (e.submitter && e.submitter.value === "cancel") return;
     e.preventDefault();
     const metric = $("#rMetric").value;
+    const comparator = $("#rComparator").value;
     const body = {
       name: $("#rName").value.trim(),
       metric,
-      comparator: $("#rComparator").value,
+      comparator,
       threshold: metric === "offline" ? 0 : parseFloat($("#rThreshold").value),
       duration_secs: parseInt($("#rDuration").value, 10) || 0,
       node_id: $("#rNode").value ? parseInt($("#rNode").value, 10) : null,
       severity: $("#rSeverity").value,
+      roc_window_secs: comparator === "roc" ? parseInt($("#rRocWindow").value, 10) : 0,
     };
     try {
       await api("POST", "/api/alerts/rules", body);

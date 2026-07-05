@@ -23,6 +23,8 @@ pub const MAX_NETS: usize = 16;
 pub const MAX_CORES: usize = 128;
 /// 受监控服务数量上限。
 pub const MAX_SERVICES: usize = 20;
+/// Docker 容器上报数量上限(超出按 CPU 用量截断)。
+pub const MAX_CONTAINERS: usize = 30;
 /// 占用 Top 进程上报数量上限。
 pub const MAX_TOP_PROCS: usize = 10;
 
@@ -86,6 +88,19 @@ pub struct ProcInfo {
 pub struct ServiceStatus {
     pub name: String,
     pub active: bool,
+}
+
+/// Docker 容器状态(仅当 agent 显式开启 `docker_stats` 才采集;经本地 Docker
+/// UNIX socket 只读查询,不执行任何写操作)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerStat {
+    pub name: String,
+    /// running / exited / paused 等(Docker 原始状态字符串)。
+    pub state: String,
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
 }
 
 /// 占用最高的进程(按 CPU 排序取前 N)。名称来自 /proc/[pid]/comm。
@@ -152,9 +167,15 @@ pub struct Metrics {
     pub tcp_listen: Option<u32>,
     #[serde(default)]
     pub tcp_time_wait: Option<u32>,
+    /// Docker 容器状态(默认关闭,见 [`ContainerStat`])。
+    #[serde(default)]
+    pub containers: Vec<ContainerStat>,
 }
 
 /// agent → server 上行消息(强类型、拒绝未知字段)。
+/// 变体大小差异来自 `Metrics` 本身较大(可选指标字段较多);消息构造后立即
+/// 序列化并丢弃,非热路径重复分配,不做装箱以免各处解构徒增复杂度。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum AgentToServer {
@@ -346,6 +367,14 @@ pub fn validate_and_clean_metrics(m: &mut Metrics) -> Result<(), &'static str> {
             *v = None;
         }
     }
+    m.containers.truncate(MAX_CONTAINERS);
+    for c in &mut m.containers {
+        c.name = clean_str(&c.name, 64);
+        c.state = clean_str(&c.state, 32);
+        c.cpu_pct = if c.cpu_pct.is_finite() { c.cpu_pct.clamp(0.0, 100_000.0) } else { 0.0 };
+        c.mem_used = c.mem_used.min(MAX_BYTES_VALUE);
+        c.mem_limit = c.mem_limit.min(MAX_BYTES_VALUE);
+    }
     Ok(())
 }
 
@@ -387,6 +416,7 @@ mod tests {
             tcp_estab: None,
             tcp_listen: None,
             tcp_time_wait: None,
+            containers: vec![],
         }
     }
 
@@ -442,6 +472,25 @@ mod tests {
         assert_eq!(m3.disks.len(), MAX_DISKS);
         assert_eq!(m3.disks[0].mount, "/m0");
         assert_eq!(m3.disks[0].used, 10);
+    }
+
+    #[test]
+    fn container_stats_cleaned_and_truncated() {
+        let mut m = sample_metrics();
+        for i in 0..40 {
+            m.containers.push(ContainerStat {
+                name: format!("c{i}\x07"),
+                state: "running".into(),
+                cpu_pct: f64::NAN,
+                mem_used: u64::MAX,
+                mem_limit: u64::MAX,
+            });
+        }
+        validate_and_clean_metrics(&mut m).unwrap();
+        assert_eq!(m.containers.len(), MAX_CONTAINERS);
+        assert_eq!(m.containers[0].name, "c0");
+        assert_eq!(m.containers[0].cpu_pct, 0.0); // NaN → 0
+        assert!(m.containers[0].mem_used <= MAX_BYTES_VALUE);
     }
 
     #[test]

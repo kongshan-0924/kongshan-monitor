@@ -103,14 +103,26 @@ docker compose up -d --build
 
 ## 采集指标
 
-CPU(总/负载/温度)、内存/Swap、磁盘各挂载点用量+读写速率+IOPS、网络各网卡收发+速率、
-TCP 连接数、uptime、进程数、主机名/OS/内核/架构。单项采集失败降级为缺省,不影响整次上报。
+CPU(总/每核/负载/温度)、内存/Swap、磁盘各挂载点用量(含 inode)+读写速率+IOPS、网络各网卡收发+速率、
+TCP 连接数(含分状态)、uptime、进程数、进程占用 Top、主机名/OS/内核/架构、systemd 服务状态(可选)、
+Docker 容器状态(可选)。单项采集失败降级为缺省,不影响整次上报。
 
 **进程监控**(可选):在 agent 配置 `/etc/outpost-agent/config.toml` 加一行即可探测指定进程存活/CPU/内存(进程名为 agent 本地配置,服务端无法下发):
 
 ```toml
 watch_processes = ["nginx", "sshd", "postgres"]   # 最多 12 个
 ```
+
+**Docker 容器监控**(可选,默认关闭):同样在 agent 配置加一行,采集本机运行中容器的名称/状态/CPU/内存
+(经本地 `/var/run/docker.sock` 只读查询,零 docker CLI 子进程):
+
+```toml
+docker_stats = true
+```
+
+> ⚠️ 需要 agent 运行账号(`outpost-agent`)在 `docker` 组:`usermod -aG docker outpost-agent`
+> 后重启服务。**这等效于赋予该账号本机 root 权限**(Docker 自身的访问模型决定,并非本项目的
+> 权限缺陷),请仅在信任该主机、明确需要容器监控时开启;不需要的主机保持默认关闭即可。
 
 ## 功能一览
 

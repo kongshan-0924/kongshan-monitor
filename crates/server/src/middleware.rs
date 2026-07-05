@@ -21,7 +21,7 @@ pub async fn security_headers(
     let h = res.headers_mut();
 
     // connect-src 需包含 ws(s) 形式的公开源(浏览器 WebSocket);随 scheme 适配
-    let po = st.cfg.public_origin();
+    let po = st.public_origin();
     let ws_origin = po.strip_prefix("https://").map_or_else(
         || po.strip_prefix("http://").map_or_else(|| po.clone(), |r| format!("ws://{r}")),
         |r| format!("wss://{r}"),
@@ -68,7 +68,7 @@ pub async fn csrf_origin_check(
     let path = req.uri().path();
     if unsafe_method && path.starts_with("/api/") && !path.starts_with("/api/agent/") {
         let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok());
-        let allowed = st.cfg.allowed_origins();
+        let allowed = st.allowed_origins();
         let ok = match origin {
             Some(o) => allowed.iter().any(|a| a == o),
             None => req.headers().contains_key("x-op"),

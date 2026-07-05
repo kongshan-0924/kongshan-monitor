@@ -18,7 +18,7 @@
     <a href="/settings">设置</a>
   </nav>
   <div class="top-actions">
-    <button id="addNodeBtn" class="btn primary sm">添加节点</button>
+    <button id="addNodeBtn" class="btn primary sm admin-only">添加节点</button>
     <button id="themeBtn" class="btn icon" title="切换浅色/深色" aria-label="切换浅色/深色">◐</button>
     <button id="logoutBtn" class="btn ghost sm">退出</button>
   </div>
@@ -31,7 +31,7 @@
       <input id="search" type="search" aria-label="搜索" placeholder="搜索名称 / 主机名 / 分组…" class="tb-search" style="max-width:280px">
     </div>
 
-    <div class="batchbar hidden" id="batchbar">
+    <div class="batchbar hidden admin-only" id="batchbar">
       <span id="selCount">已选 0</span>
       <input id="batchGrp" type="text" maxlength="32" placeholder="改分组为…" class="tb-sel" style="width:150px">
       <button id="batchSetGrp" class="btn ghost sm">应用分组</button>
@@ -82,8 +82,8 @@
 
 <dialog id="cmdDlg" class="dlg">
   <div class="dlg-body">
-    <h3>新安装命令</h3>
-    <p class="hint">旧 token 已吊销。在目标机重新执行(30 分钟内有效):</p>
+    <h3 id="cmdDlgTitle">新安装命令</h3>
+    <p class="hint" id="cmdDlgHint">旧 token 已吊销。在目标机重新执行(30 分钟内有效):</p>
     <pre id="newCmd" class="cmd"></pre>
     <div class="dlg-actions">
       <button id="copyNewCmd" type="button" class="btn primary">复制命令</button>

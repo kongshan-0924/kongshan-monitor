@@ -28,6 +28,30 @@ async function api(method, url, body) {
   return data;
 }
 
+/* ---------- 角色(轻量 RBAC):viewer 隐藏/跳过全部写操作入口 ----------
+   真正的访问控制在服务端(SessionAdmin 提取器);这里只是 UI 层面按角色
+   隐藏按钮,避免 viewer 点了却收到 403。缓存 in-flight promise,避免各页面
+   脚本各自触发一次 /api/me。 */
+let ROLE = "admin";
+let _rolePromise = null;
+function myRole() {
+  if (!_rolePromise) {
+    _rolePromise = (
+      document.body.dataset.auth !== "1"
+        ? Promise.resolve("admin")
+        : api("GET", "/api/me").then((m) => m.role || "admin").catch(() => "admin")
+    ).then((r) => {
+      ROLE = r;
+      document.body.classList.toggle("role-viewer", r === "viewer");
+      return r;
+    });
+  }
+  return _rolePromise;
+}
+function isViewer() {
+  return ROLE === "viewer";
+}
+
 /* ---------- 元素构造(XSS 安全) ---------- */
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -122,6 +146,7 @@ function setAccent(id) {
   applyAccent(currentAccent());
 })();
 function bindChrome() {
+  myRole();
   const tb = $("#themeBtn");
   if (tb) tb.addEventListener("click", () => {
     const root = document.documentElement;

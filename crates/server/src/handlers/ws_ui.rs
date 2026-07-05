@@ -29,7 +29,7 @@ pub async fn upgrade(
     }
     // WS 不受 SameSite 保护 → 显式校验 Origin,防跨站 WebSocket 劫持
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !st.cfg.allowed_origins().iter().any(|a| a == origin) {
+    if !st.allowed_origins().iter().any(|a| a == origin) {
         tracing::warn!(origin, "WS Origin 校验拒绝");
         return Err(AppError::Forbidden);
     }

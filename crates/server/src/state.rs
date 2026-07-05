@@ -3,8 +3,16 @@
 use crate::config::Config;
 use crate::ratelimit::{LoginGuard, RateLimiter};
 use sqlx::SqlitePool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, watch};
+
+/// 运行时可变的对外访问地址(设置页可修改,立即生效,无需重启)。
+/// 初值取自 `settings` 表(不存在则播种 config.toml 的 `server.public_url`/`extra_origins`)。
+#[derive(Debug, Clone)]
+pub struct NetCfg {
+    pub public_url: String,
+    pub extra_origins: Vec<String>,
+}
 
 /// agent 分发产物(启动时扫描 dist 目录并计算 SHA-256)。
 #[derive(Debug, Clone)]
@@ -17,6 +25,8 @@ pub struct Artifact {
 pub struct Inner {
     pub db: SqlitePool,
     pub cfg: Config,
+    /// 对外访问地址(动态,见 [`NetCfg`])。
+    pub net: RwLock<NetCfg>,
     pub limiter: RateLimiter,
     pub login_guard: LoginGuard,
     /// UI 实时推送通道(已清洗的 JSON 文本)。
@@ -37,3 +47,33 @@ pub struct Inner {
 }
 
 pub type AppState = Arc<Inner>;
+
+impl Inner {
+    /// 当前对外访问地址(用于 Origin 校验、安装命令、状态页链接渲染)。
+    #[must_use]
+    pub fn public_url(&self) -> String {
+        self.net.read().unwrap_or_else(std::sync::PoisonError::into_inner).public_url.clone()
+    }
+
+    /// 当前额外允许的 Origin 列表(原始 URL 形式,未裁剪为 origin)。
+    #[must_use]
+    pub fn extra_origins(&self) -> Vec<String> {
+        self.net.read().unwrap_or_else(std::sync::PoisonError::into_inner).extra_origins.clone()
+    }
+
+    /// `public_url` 的 Origin 形式(scheme://host[:port])。
+    #[must_use]
+    pub fn public_origin(&self) -> String {
+        crate::config::origin_of(&self.public_url())
+    }
+
+    /// 全部允许的 Origin(public_url + extra_origins,均裁剪为 origin 形式)。
+    #[must_use]
+    pub fn allowed_origins(&self) -> Vec<String> {
+        let mut v = vec![self.public_origin()];
+        for o in &self.extra_origins() {
+            v.push(crate::config::origin_of(o));
+        }
+        v
+    }
+}

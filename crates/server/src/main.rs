@@ -76,6 +76,24 @@ async fn build_state(cfg: Config) -> Result<AppState, String> {
     let retention = db::setting_i64(&pool, "retention_days", 30, 1, 3650).await;
     let _ = db::set_setting(&pool, "retention_days", &retention.to_string()).await;
 
+    // 对外访问地址(设置页可动态改;首启种子取 config.toml,之后设置表优先)
+    let seeded_url = db::setting_str(&pool, "public_url").await;
+    let public_url =
+        if seeded_url.is_empty() { cfg.server.public_url.clone() } else { seeded_url };
+    let _ = db::set_setting(&pool, "public_url", &public_url).await;
+    let seeded_origins = db::setting_str(&pool, "extra_origins").await;
+    let extra_origins: Vec<String> = if seeded_origins.is_empty() {
+        cfg.server.extra_origins.clone()
+    } else {
+        serde_json::from_str(&seeded_origins).unwrap_or_default()
+    };
+    let _ = db::set_setting(
+        &pool,
+        "extra_origins",
+        &serde_json::to_string(&extra_origins).unwrap_or_else(|_| "[]".into()),
+    )
+    .await;
+
     // 登录时序均衡哑哈希
     let salt = SaltString::generate(&mut OsRng);
     let dummy = Argon2::default()
@@ -126,6 +144,7 @@ async fn build_state(cfg: Config) -> Result<AppState, String> {
     Ok(Arc::new(Inner {
         db: pool,
         cfg,
+        net: std::sync::RwLock::new(state::NetCfg { public_url, extra_origins }),
         limiter: ratelimit::RateLimiter::new(),
         login_guard: ratelimit::LoginGuard::new(),
         live_tx,
@@ -142,7 +161,8 @@ async fn build_state(cfg: Config) -> Result<AppState, String> {
 fn build_router(st: AppState) -> Router {
     // 认证边界说明(端点清单详见 SECURITY_AUDIT.md):
     // - 公开:healthz、登录/引导页与其 API、agent 注册、分发/CA/脚本、静态资源
-    // - 会话保护:全部管理 API 与页面(SessionUser 提取器强制)、/ws/ui
+    // - 会话保护(SessionUser,admin+viewer 均可):只读查询类 API 与页面、/ws/ui
+    // - 会话保护(SessionAdmin,仅 admin):全部状态变更端点(轻量 RBAC,漏加即编译不过)
     // - token 保护:/ws/agent(Bearer,升级前校验)
     let api = Router::new()
         .route("/api/setup", get(handlers::auth::setup_status).post(handlers::auth::setup))
@@ -151,6 +171,9 @@ fn build_router(st: AppState) -> Router {
         .route("/api/logout_all", post(handlers::auth::logout_all))
         .route("/api/password", post(handlers::auth::change_password))
         .route("/api/me", get(handlers::auth::me))
+        .route("/api/users", get(handlers::users::list).post(handlers::users::create))
+        .route("/api/users/{id}", axum::routing::delete(handlers::users::delete))
+        .route("/api/users/{id}/role", post(handlers::users::set_role))
         .route("/api/nodes", get(handlers::nodes::list).post(handlers::nodes::create))
         .route("/api/nodes/batch", post(handlers::nodes::batch))
         .route("/api/nodes/{id}", get(handlers::nodes::detail).delete(handlers::nodes::delete))

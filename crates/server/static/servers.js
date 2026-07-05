@@ -23,25 +23,31 @@ function render() {
   let list = NODES.slice();
   if (q) list = list.filter((n) => [n.name, n.hostname, n.grp, n.os].some((s) => (s || "").toLowerCase().includes(q)));
 
+  const admin = !isViewer();
   const tbl = $("#srvTbl");
   tbl.replaceChildren();
   const head = el("tr");
-  const allCb = el("input"); allCb.type = "checkbox";
-  allCb.checked = list.length > 0 && list.every((n) => SELECTED.has(n.id));
-  allCb.addEventListener("change", () => {
-    if (allCb.checked) list.forEach((n) => SELECTED.add(n.id)); else SELECTED.clear();
-    render();
-  });
-  const th0 = el("th"); th0.appendChild(allCb); head.appendChild(th0);
-  ["名称", "分组", "备注", "状态", "主机/系统", "Agent", "最后上报", "操作"].forEach((h) => head.appendChild(el("th", null, h)));
+  if (admin) {
+    const allCb = el("input"); allCb.type = "checkbox";
+    allCb.checked = list.length > 0 && list.every((n) => SELECTED.has(n.id));
+    allCb.addEventListener("change", () => {
+      if (allCb.checked) list.forEach((n) => SELECTED.add(n.id)); else SELECTED.clear();
+      render();
+    });
+    const th0 = el("th"); th0.appendChild(allCb); head.appendChild(th0);
+  }
+  ["名称", "分组", "备注", "状态", "主机/系统", "Agent", "最后上报"].forEach((h) => head.appendChild(el("th", null, h)));
+  if (admin) head.appendChild(el("th", null, "操作"));
   tbl.appendChild(head);
 
   for (const n of list) {
     const tr = el("tr");
-    const cbTd = el("td");
-    const cb = el("input"); cb.type = "checkbox"; cb.checked = SELECTED.has(n.id);
-    cb.addEventListener("change", () => { if (cb.checked) SELECTED.add(n.id); else SELECTED.delete(n.id); updateBatch(); });
-    cbTd.appendChild(cb); tr.appendChild(cbTd);
+    if (admin) {
+      const cbTd = el("td");
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = SELECTED.has(n.id);
+      cb.addEventListener("change", () => { if (cb.checked) SELECTED.add(n.id); else SELECTED.delete(n.id); updateBatch(); });
+      cbTd.appendChild(cb); tr.appendChild(cbTd);
+    }
 
     const nameTd = el("td");
     const link = el("a", null, n.name); link.href = "/nodes/" + n.id; link.style.fontWeight = "600";
@@ -53,22 +59,32 @@ function render() {
     tr.appendChild(el("td", "subtle", n.agent_version || "—"));
     tr.appendChild(el("td", "subtle", n.last_seen ? timeAgo(n.last_seen) : "从未"));
 
-    const ops = el("td");
-    const edit = el("button", "btn ghost xs", "编辑");
-    edit.addEventListener("click", () => openEdit(n));
-    const regen = el("button", "btn ghost xs", "重置密钥");
-    regen.addEventListener("click", () => regenKey(n));
-    const revoke = el("button", "btn warn xs", "吊销");
-    revoke.addEventListener("click", () => revokeNode(n));
-    const del = el("button", "btn danger xs", "删除");
-    del.addEventListener("click", () => delNode(n));
-    [edit, regen, revoke, del].forEach((b) => ops.appendChild(b));
-    tr.appendChild(ops);
+    if (admin) {
+      const ops = el("td");
+      const edit = el("button", "btn ghost xs", "编辑");
+      edit.addEventListener("click", () => openEdit(n));
+      ops.appendChild(edit);
+      if (n.registered) {
+        const regen = el("button", "btn ghost xs", "重置密钥");
+        regen.addEventListener("click", () => regenKey(n));
+        const revoke = el("button", "btn warn xs", "吊销");
+        revoke.addEventListener("click", () => revokeNode(n));
+        ops.appendChild(regen); ops.appendChild(revoke);
+      } else {
+        const install = el("button", "btn primary xs", "一键安装");
+        install.addEventListener("click", () => showInstallCmd(n));
+        ops.appendChild(install);
+      }
+      const del = el("button", "btn danger xs", "删除");
+      del.addEventListener("click", () => delNode(n));
+      ops.appendChild(del);
+      tr.appendChild(ops);
+    }
     tbl.appendChild(tr);
   }
   if (!list.length) {
     const tr = el("tr"); const td = el("td", "subtle", NODES.length ? "无匹配" : "还没有服务器,点右上角「添加节点」");
-    td.colSpan = 9; tr.appendChild(td); tbl.appendChild(tr);
+    td.colSpan = admin ? 9 : 7; tr.appendChild(td); tbl.appendChild(tr);
   }
   updateBatch();
 }
@@ -104,6 +120,18 @@ async function regenKey(n) {
   if (!confirm("重置将吊销旧 token 并生成新的一次性安装密钥,确认?")) return;
   try {
     const r = await api("POST", "/api/nodes/" + n.id + "/regen_key");
+    $("#cmdDlgTitle").textContent = "新安装命令";
+    $("#cmdDlgHint").textContent = "旧 token 已吊销。在目标机重新执行(30 分钟内有效):";
+    $("#newCmd").textContent = r.command; $("#cmdDlg").showModal(); load();
+  } catch (e) { alert(e.error || "失败"); }
+}
+/* 待注册节点:随时可重新取回一键安装命令(旧密钥尚未使用,直接换发新的,
+   命令按当前服务端配置实时渲染,设置里改了 public_url 等也会跟着变)。 */
+async function showInstallCmd(n) {
+  try {
+    const r = await api("POST", "/api/nodes/" + n.id + "/regen_key");
+    $("#cmdDlgTitle").textContent = "一键安装命令 · " + n.name;
+    $("#cmdDlgHint").textContent = "在目标服务器以 root 执行(密钥 30 分钟内有效、仅此一次显示):";
     $("#newCmd").textContent = r.command; $("#cmdDlg").showModal(); load();
   } catch (e) { alert(e.error || "失败"); }
 }
@@ -123,6 +151,7 @@ async function batch(action, extra) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  await myRole();
   try { await load(); } catch (e) {}
   loadAlertBadge();
   setInterval(load, 8000);

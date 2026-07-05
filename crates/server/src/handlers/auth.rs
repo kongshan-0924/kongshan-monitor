@@ -39,13 +39,13 @@ pub struct PasswordReq {
     new_password: String,
 }
 
-fn valid_username(u: &str) -> bool {
+pub(crate) fn valid_username(u: &str) -> bool {
     (3..=32).contains(&u.len())
         && u.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
 }
 
-fn check_password_strength(p: &str) -> Result<(), AppError> {
+pub(crate) fn check_password_strength(p: &str) -> Result<(), AppError> {
     if !(10..=128).contains(&p.chars().count()) {
         return Err(AppError::bad("密码长度需在 10~128 字符之间"));
     }
@@ -57,7 +57,7 @@ fn check_password_strength(p: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn hash_password(p: &str) -> Result<String, AppError> {
+pub(crate) fn hash_password(p: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(p.as_bytes(), &salt)
@@ -326,5 +326,5 @@ pub async fn change_password(
 
 /// GET /api/me
 pub async fn me(user: SessionUser) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "username": user.username }))
+    Json(serde_json::json!({ "username": user.username, "role": user.role }))
 }

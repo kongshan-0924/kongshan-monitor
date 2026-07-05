@@ -23,6 +23,11 @@ pub struct AgentConfig {
     /// 仅只读查询 `systemctl is-active`,绝不执行控制命令;单元名严格校验。
     #[serde(default)]
     pub watch_services: Vec<String>,
+    /// 是否采集本机 Docker 容器状态(**本地配置,服务端无法下发,默认关闭**)。
+    /// 开启后经本地 `/var/run/docker.sock` 只读查询(list + stats),不执行任何写操作;
+    /// 需要 agent 运行账号在 `docker` 组(等效本机 root,请自行评估后再开启)。
+    #[serde(default)]
+    pub docker_stats: bool,
 }
 
 /// systemd 单元名合法字符:字母数字与 `@ . _ - :`(禁止空格/斜杠/控制字符,防命令注入)。

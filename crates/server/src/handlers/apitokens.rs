@@ -3,7 +3,7 @@
 use crate::apiauth::TOKEN_PREFIX;
 use crate::audit;
 use crate::errors::AppError;
-use crate::session::SessionUser;
+use crate::session::SessionAdmin;
 use crate::state::AppState;
 use crate::util::{client_ip, gen_token_hex, sha256_hex, unix_now};
 use axum::extract::{ConnectInfo, Path, State};
@@ -22,7 +22,7 @@ pub struct CreateReq {
 }
 
 /// GET /api/apitokens
-pub async fn list(State(st): State<AppState>, _u: SessionUser) -> Result<Json<Value>, AppError> {
+pub async fn list(State(st): State<AppState>, _u: SessionAdmin) -> Result<Json<Value>, AppError> {
     let rows = sqlx::query!(
         r#"SELECT id as "id!", name as "name!", created_at as "created_at!", last_used
            FROM api_tokens ORDER BY id DESC"#
@@ -41,7 +41,7 @@ pub async fn create(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<CreateReq>,
 ) -> Result<Json<Value>, AppError> {
     let name = outpost_common::clean_str(&req.name, 64);
@@ -76,7 +76,7 @@ pub async fn delete(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let r = sqlx::query!("DELETE FROM api_tokens WHERE id = ?1", id).execute(&st.db).await?;

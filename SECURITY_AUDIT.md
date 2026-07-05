@@ -204,3 +204,26 @@
 
 ### C.4 剩余低危(可选,已评估影响可忽略)
 TOTP 无重放计数(需先破 TLS)、限速/退避为内存态(重启重置,单实例可接受)、恢复码 40bit(受在线限速约束足够)、状态页 slug 48bit 熵(公开脱敏数据足够)、`/api/backup` 全库 VACUUM 可高频触发 I/O(受通用 API 限速约束)。
+
+## 附录 D:v0.4 会话(2026-07-05)——动态对外地址、变化率告警、轻量 RBAC、Docker 容器监控
+
+### D.1 本轮新增功能与安全设计
+
+| 项目 | 主要风险 | 缓解设计 | 实测 |
+|---|---|---|---|
+| 待注册节点「一键安装」按钮 | 无新增攻击面 | 复用既有 `regen_key` 端点(一次性密钥 30 分钟有效、仅一次展示),命令按当前 `public_url` 实时渲染 | ✓ |
+| **public_url/extra_origins 设置页动态化** | Origin/CSRF 白名单被弱配置绕过;运行时状态与磁盘配置不一致 | 校验逻辑与启动时完全一致(必须 https,`dev_local` 例外);运行时存于 `RwLock`(读多写少),写入需 `SessionAdmin`;改动立即生效并持久化到 `settings` 表(与 `report_interval_secs` 同表同治理);写操作过审计日志 | curl 实测:改 `public_url` 后旧 Origin 请求 403、新 Origin 放行、安装命令与状态页链接即时用新地址渲染,无需重启 ✓ |
+| **变化率(roc)告警条件** | 新增历史值查询路径;越权读取他人节点历史 | 复用 `metrics` 表既有只读查询,`node_id` 由规则本身限定;指标限白名单(仅 cpu/mem/disk/swap 使用率与 1 分钟负载,禁 tcp_conns 等无独立列指标);窗口 30~86400s、阈值 >0 服务端强校验 | 单测(`roc_whitelist_and_message`)+ curl 边界校验(坏指标/坏窗口/零阈值均 400)✓ |
+| **轻量 RBAC(admin / viewer)** | 本项目原为单账号模型,新增角色是迄今风险最高的一次改动——**漏一个写端点即越权** | 新增独立提取器 `SessionAdmin`(`session.rs`),`Deref` 到 `SessionUser` 使函数体几乎不变;逐一排查并替换约 30 个状态变更端点(节点增删改/批量、告警规则/渠道/静默/重复提醒、设置、状态页开关、账号管理);viewer 仅保留**自服务且已按 `user_id=自身` 限定**的端点(改密、2FA 开关、会话查看/撤销、退出);`/api/backup`(全库含哈希/密钥导出)与 API Token 管理**额外收紧为 admin-only 的 GET**(未套用"GET=只读=viewer 可见"的默认规则,因二者本质是凭据/全量数据管理而非监控数据);账号管理端点禁止删除/降级最后一个 admin、禁止删除自己;角色变更即时吊销该账号其它会话(与 2FA 变更一致的处理) | curl 端到端矩阵:只读端点(nodes/settings/alerts/audit 等)viewer 200,写端点(create/delete/toggle/settings POST/backup/apitokens)viewer 全 403;自服务端点(2fa/sessions/me)viewer 200;"最后一个 admin"保护(降级/删除均拒)、禁止自删、删除账号级联吊销其会话(401 验证)✓ |
+| **Docker 容器监控**(可选,默认关闭) | 需 agent 运行账号加入 `docker` 组——**等效本机 root**,是对 agent 现有"零 socket 访问、最小权限"安全模型的实质性改变 | 用户明确选择"仅可选主机启用"后实现:默认关闭(`docker_stats=false`,本地配置项,服务端无法下发);零 docker CLI 子进程,自实现最简 HTTP/1.1-over-UNIX-socket 客户端且仅发 GET(list + stats,无任何写操作);响应体上限 4MB + 读写超时 800ms(防 daemon 异常挂起拖累采样循环);容器 ID 在拼 URL 前二次形态校验(即便来自 Docker 自身响应而非用户输入);采集结果与其余指标共用 `validate_and_clean_metrics` 清洗管线(字符串清洗截断、数值 clamp);任意环节失败(无 socket/无权限/格式异常)一律静默返回空列表,不影响其余指标上报;不在安装脚本中默认将 agent 账号加入 `docker` 组,需管理员自行 `usermod` 并知悉其权限含义(README 已加粗提示) | `cargo build/clippy/test` 全绿;人工代码复核确认全程只读(仅 `http_get`,无 PUT/POST/DELETE 构造) |
+
+### D.2 遗留条目补记(此前会话新增功能,原定"待补充审计"现予确认)
+- **Backfill 补传 / SMTP 通知渠道 / systemd 服务监控(P2-3)**:均已在附录 C 范围内逐项确认(不更新 last_seen/不推实时/不触发告警;CRLF 防护+隐式 TLS 校验+凭据不落日志;子进程 `Command::args` 不经 shell+单元名白名单+`--` 选项终止符)。
+- **inode 使用率(P2-1)/ 每核 CPU(P2-2)**:纯数值只读采集,复用既有 `validate_and_clean_metrics` 清洗管线(截断/非负/`used ≤ total` clamp),无新增攻击面;此前遗漏单独列出,现予补记确认。
+- **总览全局趋势图(P3-1)**:`GET /api/overview/trend` 为纯服务端聚合只读查询,经 `SessionUser` 会话认证,无新增写面;现予补记确认。
+
+### D.3 依赖
+本轮零新增第三方依赖(Docker 客户端用 std 库 `UnixStream` + 已有 `serde_json`;RBAC/roc/动态地址均为既有依赖内实现)。
+
+### D.4 未变更红线
+不下发远程命令、不跳过 TLS 校验、参数化 SQL(`query!` 编译期校验)、CSRF Origin 精确匹配——均保持;认证覆盖新增一条前提:**全部状态变更端点必须用 `SessionAdmin`**(而非仅 `SessionUser`),已逐一核对并记录于上表。

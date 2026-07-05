@@ -3,7 +3,7 @@
 
 use crate::audit;
 use crate::errors::AppError;
-use crate::session::SessionUser;
+use crate::session::{SessionAdmin, SessionUser};
 use crate::state::AppState;
 use crate::util::{client_ip, gen_token_hex, sha256_hex, unix_now};
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -50,7 +50,8 @@ fn validate_node_name(name: &str) -> Result<String, AppError> {
 
 /// 渲染一键安装命令(密钥仅此一次返回,不落库明文)。
 fn render_install_command(st: &AppState, key: &str) -> String {
-    let url = st.cfg.server.public_url.trim_end_matches('/');
+    let public_url = st.public_url();
+    let url = public_url.trim_end_matches('/');
     match (st.cfg.install.mode.as_str(), &st.ca_fingerprint) {
         ("pinned_ca", Some(fpr)) => format!(
             "sh -c 'set -eu; U=\"{url}\"; F=\"{fpr}\"; D=\"$(mktemp -d)\"; cd \"$D\"; \
@@ -71,7 +72,8 @@ pub async fn upgrade_command(
     State(st): State<AppState>,
     _user: SessionUser,
 ) -> Result<Json<Value>, AppError> {
-    let url = st.cfg.server.public_url.trim_end_matches('/');
+    let public_url = st.public_url();
+    let url = public_url.trim_end_matches('/');
     let cmd = match (st.cfg.install.mode.as_str(), &st.ca_fingerprint) {
         ("pinned_ca", Some(fpr)) => format!(
             "sh -c 'set -eu; U=\"{url}\"; F=\"{fpr}\"; D=\"$(mktemp -d)\"; cd \"$D\"; \
@@ -111,7 +113,7 @@ pub async fn create(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<CreateNodeReq>,
 ) -> Result<Json<Value>, AppError> {
     let name = validate_node_name(&req.name)?;
@@ -407,7 +409,7 @@ pub async fn rename(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
     Json(req): Json<RenameReq>,
 ) -> Result<Json<Value>, AppError> {
@@ -441,7 +443,7 @@ pub async fn revoke(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let res = sqlx::query!("UPDATE nodes SET revoked = 1 WHERE id = ?1", id)
@@ -464,7 +466,7 @@ pub async fn regen_key(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let res = sqlx::query!("UPDATE nodes SET revoked = 1 WHERE id = ?1", id)
@@ -499,7 +501,7 @@ pub async fn batch(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<BatchReq>,
 ) -> Result<Json<Value>, AppError> {
     if req.ids.is_empty() || req.ids.len() > 100 {
@@ -557,7 +559,7 @@ pub async fn delete(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let res = sqlx::query!("DELETE FROM nodes WHERE id = ?1", id).execute(&st.db).await?;

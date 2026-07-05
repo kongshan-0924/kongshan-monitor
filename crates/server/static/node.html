@@ -31,10 +31,10 @@
     </div>
     <div class="node-head-actions">
       <button id="exportBtn" class="btn ghost sm">导出数据</button>
-      <button id="renameBtn" class="btn ghost sm">重命名</button>
-      <button id="regenBtn" class="btn ghost sm">重置密钥</button>
-      <button id="revokeBtn" class="btn warn sm">吊销 Token</button>
-      <button id="deleteBtn" class="btn danger sm">删除节点</button>
+      <button id="renameBtn" class="btn ghost sm admin-only">重命名</button>
+      <button id="regenBtn" class="btn ghost sm admin-only">重置密钥</button>
+      <button id="revokeBtn" class="btn warn sm admin-only">吊销 Token</button>
+      <button id="deleteBtn" class="btn danger sm admin-only">删除节点</button>
     </div>
   </div>
 
@@ -73,6 +73,7 @@
     <div class="card hidden" id="coreCard"><h4>每核 CPU 使用率</h4><div id="coreBars" class="core-bars"></div></div>
     <div class="card hidden" id="topProcCard"><h4>进程占用 Top(按 CPU)</h4><table class="tbl" id="topProcTbl"></table></div>
     <div class="card hidden" id="svcCard"><h4>服务状态(systemd)</h4><table class="tbl" id="svcTbl"></table></div>
+    <div class="card hidden" id="dockerCard"><h4>Docker 容器</h4><table class="tbl" id="dockerTbl"></table></div>
     <div class="card hidden" id="procCard"><h4>受监控进程</h4><table class="tbl" id="procTbl"></table></div>
   </section>
 </main>

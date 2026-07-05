@@ -14,8 +14,10 @@ pub const METRICS: &[&str] = &[
     "cpu_pct", "mem_pct", "disk_pct", "swap_pct", "load1", "cpu_temp", "tcp_conns", "inode_pct",
     "services_down", "offline",
 ];
-/// 比较符白名单。
-pub const COMPARATORS: &[&str] = &["gt", "lt", "gte", "lte"];
+/// 比较符白名单。roc(变化率):窗口 `roc_window_secs` 秒内绝对变化量 >= threshold。
+pub const COMPARATORS: &[&str] = &["gt", "lt", "gte", "lte", "roc"];
+/// roc 仅支持有独立列、可从历史行直接重算的核心指标(其余存于 detail JSON,暂不支持)。
+pub const ROC_METRICS: &[&str] = &["cpu_pct", "mem_pct", "disk_pct", "swap_pct", "load1"];
 /// 渠道类型白名单。
 pub const CHANNEL_KINDS: &[&str] = &["webhook", "telegram", "bark", "smtp"];
 /// 严重度白名单(有序:info < warning < critical)。
@@ -32,6 +34,10 @@ pub fn valid_metric(m: &str) -> bool {
 #[must_use]
 pub fn valid_comparator(c: &str) -> bool {
     COMPARATORS.contains(&c)
+}
+#[must_use]
+pub fn valid_roc_metric(m: &str) -> bool {
+    ROC_METRICS.contains(&m)
 }
 #[must_use]
 pub fn valid_channel_kind(k: &str) -> bool {
@@ -109,6 +115,7 @@ struct RuleLite {
     threshold: f64,
     duration_secs: i64,
     severity: String,
+    roc_window_secs: i64,
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -138,7 +145,8 @@ async fn load_rules(st: &AppState, node_id: i64, offline: bool) -> Vec<RuleLite>
     let rows = sqlx::query!(
         r#"SELECT id as "id!", name as "name!", metric as "metric!",
                   comparator as "comparator!", threshold as "threshold!: f64",
-                  duration_secs as "duration_secs!", severity as "severity!"
+                  duration_secs as "duration_secs!", severity as "severity!",
+                  roc_window_secs as "roc_window_secs!"
            FROM alert_rules
            WHERE enabled = 1 AND (node_id IS NULL OR node_id = ?1)
              AND ((?2 = 1 AND metric = 'offline') OR (?2 = 0 AND metric != 'offline'))"#,
@@ -157,8 +165,37 @@ async fn load_rules(st: &AppState, node_id: i64, offline: bool) -> Vec<RuleLite>
             threshold: r.threshold,
             duration_secs: r.duration_secs,
             severity: r.severity,
+            roc_window_secs: r.roc_window_secs,
         })
         .collect()
+}
+
+/// 取节点在 `at_or_before` 时刻(含)之前最近一条历史指标,重算出 `metric` 的值
+/// (roc 变化率专用:仅支持有独立列的核心指标,从 `metrics` 表直接重算)。
+#[allow(clippy::cast_precision_loss)]
+async fn past_core_value(st: &AppState, node_id: i64, metric: &str, at_or_before: i64) -> Option<f64> {
+    let row = sqlx::query!(
+        r#"SELECT cpu_pct as "cpu_pct!: f64", load1 as "load1!: f64",
+                  mem_used as "mem_used!: i64", mem_total as "mem_total!: i64",
+                  swap_used as "swap_used!: i64", swap_total as "swap_total!: i64",
+                  disk_used as "disk_used!: i64", disk_total as "disk_total!: i64"
+           FROM metrics WHERE node_id = ?1 AND ts <= ?2 ORDER BY ts DESC LIMIT 1"#,
+        node_id,
+        at_or_before
+    )
+    .fetch_optional(&st.db)
+    .await
+    .ok()
+    .flatten()?;
+    let pct = |used: f64, total: f64| if total > 0.0 { used / total * 100.0 } else { 0.0 };
+    match metric {
+        "cpu_pct" => Some(row.cpu_pct),
+        "mem_pct" => Some(pct(row.mem_used as f64, row.mem_total as f64)),
+        "disk_pct" => Some(pct(row.disk_used as f64, row.disk_total as f64)),
+        "swap_pct" => Some(pct(row.swap_used as f64, row.swap_total as f64)),
+        "load1" => Some(row.load1),
+        _ => None,
+    }
 }
 
 /// 指标上报路径调用:评估该节点全部非离线规则。
@@ -168,14 +205,28 @@ pub async fn on_metrics(st: &AppState, node_id: i64, m: &Metrics, disk_total: i6
         let Some(val) = metric_value(&rule.metric, m, disk_total, disk_used) else {
             continue;
         };
-        let breaching = match rule.comparator.as_str() {
-            "gt" => val > rule.threshold,
-            "lt" => val < rule.threshold,
-            "gte" => val >= rule.threshold,
-            "lte" => val <= rule.threshold,
-            _ => false,
+        // roc(变化率):与窗口前的历史值比较,上报的"val"改为变化量(可正可负);
+        // 其余比较符仍按当前值判定。历史数据不足(节点刚上线等)时不判定,避免误报。
+        let (breaching, report_val) = if rule.comparator == "roc" {
+            let window = rule.roc_window_secs.max(30);
+            match past_core_value(st, node_id, &rule.metric, now.saturating_sub(window)).await {
+                Some(past) => {
+                    let delta = val - past;
+                    (delta.abs() >= rule.threshold, delta)
+                }
+                None => (false, 0.0),
+            }
+        } else {
+            let breaching = match rule.comparator.as_str() {
+                "gt" => val > rule.threshold,
+                "lt" => val < rule.threshold,
+                "gte" => val >= rule.threshold,
+                "lte" => val <= rule.threshold,
+                _ => false,
+            };
+            (breaching, val)
         };
-        transition(st, &rule, node_id, breaching, val, rule.duration_secs, now).await;
+        transition(st, &rule, node_id, breaching, report_val, rule.duration_secs, now).await;
     }
 }
 
@@ -328,7 +379,18 @@ fn format_message(rule: &RuleLite, val: f64, firing: bool) -> String {
             format!("节点恢复在线(规则:{})", rule.name)
         };
     }
-    let cmp = if rule.comparator == "lt" { "低于" } else { "高于" };
+    if rule.comparator == "roc" {
+        let mins = rule.roc_window_secs.max(30) / 60;
+        return if firing {
+            format!(
+                "{label} 在 {mins} 分钟内变化 {val:+.1}(阈值 ±{:.1};规则:{})",
+                rule.threshold, rule.name
+            )
+        } else {
+            format!("{label} 变化已恢复平稳(规则:{})", rule.name)
+        };
+    }
+    let cmp = if rule.comparator == "lt" || rule.comparator == "lte" { "低于" } else { "高于" };
     if firing {
         format!("{label} {val:.1} {cmp}阈值 {:.1}(规则:{})", rule.threshold, rule.name)
     } else {
@@ -582,6 +644,7 @@ mod tests {
             disk_read_iops: 0, disk_write_iops: 0, procs_watch: vec![],
             cpu_per_core: vec![], services: vec![], top_procs: vec![],
             tcp_estab: None, tcp_listen: None, tcp_time_wait: None,
+            containers: vec![],
         }
     }
 
@@ -595,6 +658,26 @@ mod tests {
         // 除零安全
         assert_eq!(metric_value("disk_pct", &s, 0, 0).unwrap(), 0.0);
         assert!(metric_value("unknown", &s, 0, 0).is_none());
+    }
+
+    #[test]
+    fn roc_whitelist_and_message() {
+        assert!(valid_comparator("roc"));
+        assert!(valid_roc_metric("cpu_pct") && !valid_roc_metric("tcp_conns"));
+        let rule = RuleLite {
+            id: 1,
+            name: "spike".into(),
+            metric: "cpu_pct".into(),
+            comparator: "roc".into(),
+            threshold: 30.0,
+            duration_secs: 0,
+            severity: "warning".into(),
+            roc_window_secs: 300,
+        };
+        let msg = format_message(&rule, 42.5, true);
+        assert!(msg.contains("变化") && msg.contains("+42.5"));
+        let resolved = format_message(&rule, 0.0, false);
+        assert!(resolved.contains("恢复"));
     }
 
     #[test]

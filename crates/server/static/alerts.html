@@ -35,7 +35,7 @@
   <section class="card pad">
     <div class="row-head">
       <h3>告警规则</h3>
-      <button id="addRuleBtn" class="btn primary sm">新增规则</button>
+      <button id="addRuleBtn" class="btn primary sm admin-only">新增规则</button>
     </div>
     <table class="tbl" id="ruleTbl"></table>
   </section>
@@ -43,13 +43,13 @@
   <section class="card pad">
     <div class="row-head">
       <h3>通知渠道(Webhook)</h3>
-      <button id="addChanBtn" class="btn primary sm">新增渠道</button>
+      <button id="addChanBtn" class="btn primary sm admin-only">新增渠道</button>
     </div>
     <p class="hint subtle">支持飞书 / 钉钉 / 企业微信 / Slack 群机器人、Telegram、Bark、邮件(SMTP)。
       出站强制 https / TLS 并做 SSRF 校验:默认拒绝私网/回环目标。</p>
     <table class="tbl" id="chanTbl"></table>
     <div class="row-head" style="margin-top:16px">
-      <label class="hint" style="display:flex;align-items:center;gap:8px;margin:0">重复提醒:未恢复告警每隔
+      <label class="hint admin-only" style="display:flex;align-items:center;gap:8px;margin:0">重复提醒:未恢复告警每隔
         <select id="renotifySel" class="tb-sel" style="width:auto">
           <option value="0">关闭</option>
           <option value="600">10 分钟</option>
@@ -68,7 +68,7 @@
   <section class="card pad">
     <div class="row-head">
       <h3>维护窗口 / 静默</h3>
-      <button id="addSilenceBtn" class="btn primary sm">新增静默</button>
+      <button id="addSilenceBtn" class="btn primary sm admin-only">新增静默</button>
     </div>
     <p class="hint subtle">静默期内命中的(节点 × 规则)不外发通知,但仍记录事件、在 UI 显示。适合计划维护时段。</p>
     <table class="tbl" id="silenceTbl"></table>
@@ -100,11 +100,24 @@
           <option value="gte">大于等于 ≥</option>
           <option value="lt">小于 &lt;</option>
           <option value="lte">小于等于 ≤</option>
+          <option value="roc">变化率(窗口内突增/骤降)</option>
         </select>
       </label>
-      <label>阈值 <input id="rThreshold" type="number" step="any" min="0" value="90"></label>
+      <label id="rThresholdLabel">阈值 <input id="rThreshold" type="number" step="any" min="0" value="90"></label>
     </div>
-    <label>持续时间(秒,连续超限多久才告警;离线时为容忍时长)
+    <div id="rocWindowRow" class="hidden">
+      <label>回看窗口(与当前值比较多久之前的历史值)
+        <select id="rRocWindow">
+          <option value="60">1 分钟</option>
+          <option value="300" selected>5 分钟</option>
+          <option value="900">15 分钟</option>
+          <option value="1800">30 分钟</option>
+          <option value="3600">1 小时</option>
+        </select>
+      </label>
+      <p class="hint subtle">仅支持 CPU/内存/磁盘/Swap 使用率与 1 分钟负载;窗口内绝对变化量达到阈值即触发。</p>
+    </div>
+    <label>持续时间(秒,连续超限多久才告警;离线时为容忍时长;变化率条件通常填 0)
       <input id="rDuration" type="number" min="0" max="86400" value="60">
     </label>
     <label>严重度(决定推送到哪些渠道)

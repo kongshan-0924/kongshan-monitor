@@ -98,6 +98,10 @@ fn build_detail(m: &outpost_common::Metrics) -> (String, i64, i64) {
         "tcp_estab": m.tcp_estab,
         "tcp_listen": m.tcp_listen,
         "tcp_time_wait": m.tcp_time_wait,
+        "containers": m.containers.iter().map(|c| json!({
+            "name": c.name, "state": c.state, "cpu_pct": c.cpu_pct,
+            "mem_used": c.mem_used, "mem_limit": c.mem_limit,
+        })).collect::<Vec<_>>(),
     })
     .to_string();
     (detail, dt, du)

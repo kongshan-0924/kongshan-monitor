@@ -9,5 +9,6 @@ pub mod nodes;
 pub mod pages;
 pub mod settings;
 pub mod status;
+pub mod users;
 pub mod ws_agent;
 pub mod ws_ui;

@@ -3,7 +3,7 @@
 use crate::audit;
 use crate::db::{set_setting, setting_i64};
 use crate::errors::AppError;
-use crate::session::SessionUser;
+use crate::session::{SessionAdmin, SessionUser};
 use crate::state::AppState;
 use crate::util::client_ip;
 use axum::extract::{ConnectInfo, State};
@@ -41,6 +41,13 @@ pub struct SettingsReq {
     /// 自动备份保留份数
     #[serde(default = "default_keep")]
     auto_backup_keep: i64,
+    /// 对外访问地址(用于 Origin 校验/安装命令/状态页链接),必须 https(本机回环+关闭
+    /// Secure Cookie 时例外允许 http)。
+    #[serde(default)]
+    public_url: String,
+    /// 额外允许的 Origin,每行一个;留空即清空。
+    #[serde(default)]
+    extra_origins: String,
 }
 
 fn default_keep() -> i64 {
@@ -54,10 +61,11 @@ pub async fn get(State(st): State<AppState>, _user: SessionUser) -> Result<Json<
     let backup_hours = setting_i64(&st.db, "auto_backup_hours", 0, 0, 168).await;
     let backup_keep = setting_i64(&st.db, "auto_backup_keep", 7, 1, 90).await;
     let slug = crate::db::setting_str(&st.db, "status_slug").await;
+    let public_url = st.public_url();
     let status_url = if slug.is_empty() {
         String::new()
     } else {
-        format!("{}/status/{}", st.cfg.server.public_url.trim_end_matches('/'), slug)
+        format!("{}/status/{}", public_url.trim_end_matches('/'), slug)
     };
     Ok(Json(json!({
         "report_interval_secs": interval,
@@ -66,6 +74,8 @@ pub async fn get(State(st): State<AppState>, _user: SessionUser) -> Result<Json<
         "auto_backup_keep": backup_keep,
         "status_enabled": !slug.is_empty(),
         "status_url": status_url,
+        "public_url": public_url,
+        "extra_origins": st.extra_origins().join("\n"),
     })))
 }
 
@@ -74,7 +84,7 @@ pub async fn set(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<SettingsReq>,
 ) -> Result<Json<Value>, AppError> {
     if !(1..=3600).contains(&req.report_interval_secs) {
@@ -89,10 +99,47 @@ pub async fn set(
     if !(1..=90).contains(&req.auto_backup_keep) {
         return Err(AppError::bad("备份保留份数需在 1~90"));
     }
+    let dev_local = st.cfg.dev_local();
+    let public_url = req.public_url.trim().to_string();
+    if public_url.is_empty() || public_url.len() > 200 {
+        return Err(AppError::bad("对外访问地址不能为空且不超过 200 字符"));
+    }
+    if !crate::config::scheme_ok(&public_url, dev_local) {
+        return Err(AppError::bad(
+            "对外访问地址必须为 https://(本机回环预览可用 http:// 并关闭 Secure Cookie)",
+        ));
+    }
+    let extra_origins: Vec<String> = req
+        .extra_origins
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if extra_origins.len() > 16 {
+        return Err(AppError::bad("额外 Origin 最多 16 条"));
+    }
+    for o in &extra_origins {
+        if o.len() > 200 || !crate::config::scheme_ok(o, dev_local) {
+            return Err(AppError::bad(
+                "额外 Origin 每条须为 https://(本机预览可 http://),且不超过 200 字符",
+            ));
+        }
+    }
+
     set_setting(&st.db, "report_interval_secs", &req.report_interval_secs.to_string()).await?;
     set_setting(&st.db, "retention_days", &req.retention_days.to_string()).await?;
     set_setting(&st.db, "auto_backup_hours", &req.auto_backup_hours.to_string()).await?;
     set_setting(&st.db, "auto_backup_keep", &req.auto_backup_keep.to_string()).await?;
+    set_setting(&st.db, "public_url", &public_url).await?;
+    set_setting(
+        &st.db,
+        "extra_origins",
+        &serde_json::to_string(&extra_origins).unwrap_or_else(|_| "[]".into()),
+    )
+    .await?;
+    *st.net.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        crate::state::NetCfg { public_url, extra_origins };
 
     let interval = u32::try_from(req.report_interval_secs).unwrap_or(5);
     let _ = st.interval_tx.send(interval);
@@ -103,7 +150,10 @@ pub async fn set(
         &user.username,
         &ip.to_string(),
         "settings_change",
-        &format!("interval={} retention={}d", req.report_interval_secs, req.retention_days),
+        &format!(
+            "interval={} retention={}d public_url={}",
+            req.report_interval_secs, req.retention_days, req.public_url
+        ),
     )
     .await;
     Ok(Json(json!({ "ok": true })))

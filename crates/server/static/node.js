@@ -157,6 +157,29 @@ function renderTables(detail) {
     }
   }
 
+  // Docker 容器(仅在 agent 开启 docker_stats 时有数据)
+  const dcard = $("#dockerCard");
+  const containers = (detail && detail.containers) || [];
+  if (dcard) {
+    dcard.classList.toggle("hidden", containers.length === 0);
+    const dt = $("#dockerTbl");
+    dt.replaceChildren();
+    const dh = el("tr");
+    ["容器", "状态", "CPU", "内存"].forEach((h) => dh.appendChild(el("th", null, h)));
+    dt.appendChild(dh);
+    for (const c of containers) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, c.name));
+      const td = el("td");
+      const running = c.state === "running";
+      td.appendChild(el("span", "spill " + (running ? "spill-on" : "spill-off"), c.state));
+      tr.appendChild(td);
+      tr.appendChild(el("td", null, (c.cpu_pct || 0).toFixed(1) + "%"));
+      tr.appendChild(el("td", null, c.mem_limit ? (fmtBytes(c.mem_used || 0) + " / " + fmtBytes(c.mem_limit)) : fmtBytes(c.mem_used || 0)));
+      dt.appendChild(tr);
+    }
+  }
+
   // 受监控进程(仅在 agent 配置了 watch_processes 时有数据)
   const pcard = $("#procCard");
   const watch = (detail && detail.procs_watch) || [];

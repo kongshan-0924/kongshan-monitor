@@ -14,6 +14,15 @@ pub struct SessionUser {
     pub user_id: i64,
     pub username: String,
     pub token_hash: String,
+    /// admin | viewer(轻量 RBAC;既有账号迁移后一律 admin)。
+    pub role: String,
+}
+
+impl SessionUser {
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
 }
 
 /// 尝试从请求头恢复会话。
@@ -25,7 +34,7 @@ pub async fn try_session(st: &AppState, headers: &HeaderMap) -> Option<SessionUs
     let h = sha256_hex(tok.as_bytes());
     let row = sqlx::query!(
         r#"SELECT s.token_hash as "token_hash!", s.expires_at as "expires_at!",
-                  u.id as "uid!", u.username as "username!"
+                  u.id as "uid!", u.username as "username!", u.role as "role!"
            FROM sessions s JOIN users u ON u.id = s.user_id
            WHERE s.token_hash = ?1"#,
         h
@@ -44,7 +53,7 @@ pub async fn try_session(st: &AppState, headers: &HeaderMap) -> Option<SessionUs
             .await;
         return None;
     }
-    Some(SessionUser { user_id: row.uid, username: row.username, token_hash: h })
+    Some(SessionUser { user_id: row.uid, username: row.username, token_hash: h, role: row.role })
 }
 
 impl FromRequestParts<AppState> for SessionUser {
@@ -52,6 +61,30 @@ impl FromRequestParts<AppState> for SessionUser {
 
     async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, AppError> {
         try_session(st, &parts.headers).await.ok_or(AppError::Unauthorized)
+    }
+}
+
+/// 要求 admin 角色的提取器(轻量 RBAC):全部状态变更端点用它替代 [`SessionUser`],
+/// viewer 会话会被拒绝(403)。`Deref` 到 `SessionUser`,处理函数体内字段访问方式不变。
+#[derive(Debug, Clone)]
+pub struct SessionAdmin(pub SessionUser);
+
+impl std::ops::Deref for SessionAdmin {
+    type Target = SessionUser;
+    fn deref(&self) -> &SessionUser {
+        &self.0
+    }
+}
+
+impl FromRequestParts<AppState> for SessionAdmin {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, AppError> {
+        let user = try_session(st, &parts.headers).await.ok_or(AppError::Unauthorized)?;
+        if !user.is_admin() {
+            return Err(AppError::Forbidden);
+        }
+        Ok(SessionAdmin(user))
     }
 }
 

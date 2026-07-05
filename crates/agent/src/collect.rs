@@ -42,6 +42,7 @@ pub struct Sampler {
     prev: Option<Prev>,
     watch: Vec<String>,
     watch_services: Vec<String>,
+    docker_stats: bool,
     /// 上次各 pid 累计 CPU jiffies(用于 Top 进程 CPU%)。
     prev_pids: HashMap<u32, u64>,
 }
@@ -53,6 +54,7 @@ impl Sampler {
             prev: None,
             watch: Vec::new(),
             watch_services: Vec::new(),
+            docker_stats: false,
             prev_pids: HashMap::new(),
         }
     }
@@ -65,6 +67,19 @@ impl Sampler {
     /// 设置受监控 systemd 服务列表(来自 agent 本地配置)。
     pub fn set_watch_services(&mut self, services: Vec<String>) {
         self.watch_services = services.into_iter().take(outpost_common::MAX_SERVICES).collect();
+    }
+
+    /// 设置是否采集 Docker 容器状态(来自 agent 本地配置,默认关闭)。
+    pub fn set_docker_stats(&mut self, enabled: bool) {
+        self.docker_stats = enabled;
+    }
+
+    /// 只读采集容器状态;未开启时不发起任何 socket 连接。
+    fn scan_containers(&self) -> Vec<outpost_common::ContainerStat> {
+        if !self.docker_stats {
+            return Vec::new();
+        }
+        crate::docker::scan_containers()
     }
 
     /// 只读查询各服务 active 状态:单次 `systemctl is-active <单元…>`(一行一状态)。
@@ -272,6 +287,7 @@ impl Sampler {
             tcp_estab,
             tcp_listen,
             tcp_time_wait,
+            containers: self.scan_containers(),
         }
     }
 

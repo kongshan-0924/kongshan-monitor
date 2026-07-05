@@ -2,6 +2,8 @@
 "use strict";
 
 document.addEventListener("DOMContentLoaded", async () => {
+  await myRole();
+
   // ---------- 左侧分类导航:点击显示对应区 ----------
   const navLinks = $$("#setNav a");
   function showSection(id) {
@@ -10,8 +12,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.scrollTo(0, 0);
   }
   navLinks.forEach((a) => a.addEventListener("click", () => showSection(a.dataset.target)));
-  // 支持 #hash 直达
-  if (location.hash) { const id = location.hash.slice(1); if (document.getElementById(id)) showSection(id); }
+  // 支持 #hash 直达;viewer 默认区(监控参数)不可见时改落到外观主题
+  if (location.hash && document.getElementById(location.hash.slice(1))) {
+    showSection(location.hash.slice(1));
+  } else if (isViewer()) {
+    showSection("s-appearance");
+  }
 
   // ---------- 外观主题 ----------
   function renderThemes() {
@@ -47,6 +53,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("#retention").value = s.retention_days;
     if ($("#backupHours")) $("#backupHours").value = String(s.auto_backup_hours || 0);
     if ($("#backupKeep")) $("#backupKeep").value = s.auto_backup_keep || 7;
+    if ($("#publicUrl")) $("#publicUrl").value = s.public_url || "";
+    if ($("#extraOrigins")) $("#extraOrigins").value = s.extra_origins || "";
     renderStatusState(s.status_enabled, s.status_url);
   } catch (_) {}
 
@@ -57,17 +65,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   window.__renderStatusState = renderStatusState;
 
+  // /api/settings 是单一整体对象,任一分区表单提交都需带上全部字段,避免互相覆盖。
+  function settingsPayload() {
+    return {
+      report_interval_secs: parseInt($("#interval").value, 10),
+      retention_days: parseInt($("#retention").value, 10),
+      auto_backup_hours: parseInt($("#backupHours").value, 10) || 0,
+      auto_backup_keep: parseInt($("#backupKeep").value, 10) || 7,
+      public_url: $("#publicUrl").value.trim(),
+      extra_origins: $("#extraOrigins").value,
+    };
+  }
+
   $("#sysForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const msg = $("#sysMsg");
     msg.textContent = "";
     try {
-      await api("POST", "/api/settings", {
-        report_interval_secs: parseInt($("#interval").value, 10),
-        retention_days: parseInt($("#retention").value, 10),
-        auto_backup_hours: parseInt($("#backupHours").value, 10) || 0,
-        auto_backup_keep: parseInt($("#backupKeep").value, 10) || 7,
-      });
+      await api("POST", "/api/settings", settingsPayload());
       msg.textContent = "已保存 ✓";
       setTimeout(() => { msg.textContent = ""; }, 2000);
     } catch (err) {
@@ -75,7 +90,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // 自动备份设置(与监控参数共用 /api/settings,提交全部 4 字段避免互相覆盖)
+  // 自动备份设置(与监控参数共用 /api/settings,提交全部字段避免互相覆盖)
   const bf = $("#backupForm");
   if (bf) {
     bf.addEventListener("submit", async (e) => {
@@ -83,14 +98,26 @@ document.addEventListener("DOMContentLoaded", async () => {
       const msg = $("#backupMsg");
       msg.textContent = "";
       try {
-        await api("POST", "/api/settings", {
-          report_interval_secs: parseInt($("#interval").value, 10),
-          retention_days: parseInt($("#retention").value, 10),
-          auto_backup_hours: parseInt($("#backupHours").value, 10) || 0,
-          auto_backup_keep: parseInt($("#backupKeep").value, 10) || 7,
-        });
+        await api("POST", "/api/settings", settingsPayload());
         msg.textContent = "已保存 ✓";
         setTimeout(() => { msg.textContent = ""; }, 2000);
+      } catch (err) {
+        msg.textContent = err.error || "保存失败";
+      }
+    });
+  }
+
+  // 对外访问地址(同样共用 /api/settings)
+  const nf = $("#netForm");
+  if (nf) {
+    nf.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = $("#netMsg");
+      msg.textContent = "";
+      try {
+        await api("POST", "/api/settings", settingsPayload());
+        msg.textContent = "已保存 ✓,立即生效";
+        setTimeout(() => { msg.textContent = ""; }, 2500);
       } catch (err) {
         msg.textContent = err.error || "保存失败";
       }
@@ -244,7 +271,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (!d.items.length) { const tr = el("tr"); const td = el("td", "subtle", "还没有 Token"); td.colSpan = 4; tr.appendChild(td); tbl.appendChild(tr); }
   }
-  loadTokens();
+  if (!isViewer()) loadTokens();
   $("#addTokenBtn").addEventListener("click", async () => {
     const name = prompt("Token 名称(便于识别用途):", "prometheus");
     if (!name) return;
@@ -255,6 +282,61 @@ document.addEventListener("DOMContentLoaded", async () => {
       loadTokens();
     } catch (e) { alert(e.error || "创建失败"); }
   });
+
+  // ---------- 账号管理(admin only)----------
+  if (!isViewer()) {
+    const ROLE_LABEL = { admin: "admin(完全管理)", viewer: "viewer(只读观察者)" };
+    async function loadUsers() {
+      const me = await api("GET", "/api/me");
+      const d = await api("GET", "/api/users");
+      const tbl = $("#userTbl");
+      tbl.replaceChildren();
+      const head = el("tr");
+      ["用户名", "角色", "创建时间", "操作"].forEach((h) => head.appendChild(el("th", null, h)));
+      tbl.appendChild(head);
+      for (const u of d.items) {
+        const tr = el("tr");
+        const nameTd = el("td", null, u.username);
+        if (u.username === me.username) nameTd.appendChild(el("span", "subtle", " (你)"));
+        tr.appendChild(nameTd);
+        tr.appendChild(el("td", null, ROLE_LABEL[u.role] || u.role));
+        tr.appendChild(el("td", null, fmtTime(u.created_at)));
+        const ops = el("td");
+        const other = u.role === "admin" ? "viewer" : "admin";
+        const toggle = el("button", "btn ghost xs", "设为 " + other);
+        toggle.addEventListener("click", async () => {
+          if (!confirm("将「" + u.username + "」的角色改为 " + other + "?")) return;
+          try { await api("POST", "/api/users/" + u.id + "/role", { role: other }); loadUsers(); }
+          catch (e) { alert(e.error || "操作失败"); }
+        });
+        const del = el("button", "btn danger xs", "删除");
+        del.addEventListener("click", async () => {
+          if (!confirm("删除账号「" + u.username + "」?")) return;
+          try { await api("DELETE", "/api/users/" + u.id); loadUsers(); }
+          catch (e) { alert(e.error || "操作失败"); }
+        });
+        ops.appendChild(toggle); ops.appendChild(del);
+        tr.appendChild(ops);
+        tbl.appendChild(tr);
+      }
+    }
+    loadUsers().catch(() => {});
+    $("#addUserBtn").addEventListener("click", () => {
+      $("#userForm").reset(); $("#userMsg").textContent = ""; $("#userDlg").showModal();
+    });
+    $("#userForm").addEventListener("submit", async (e) => {
+      if (e.submitter && e.submitter.value === "cancel") return;
+      e.preventDefault();
+      try {
+        await api("POST", "/api/users", {
+          username: $("#uName").value.trim(),
+          password: $("#uPass").value,
+          role: $("#uRole").value,
+        });
+        $("#userDlg").close(); loadUsers();
+      } catch (err) { $("#userMsg").textContent = err.error || "创建失败"; }
+    });
+  }
 
   try {
     const a = await api("GET", "/api/audit");

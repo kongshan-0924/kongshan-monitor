@@ -4,7 +4,7 @@
 use crate::audit;
 use crate::db::{set_setting, setting_str};
 use crate::errors::AppError;
-use crate::session::SessionUser;
+use crate::session::SessionAdmin;
 use crate::state::AppState;
 use crate::util::{client_ip, ct_eq, gen_token_hex, unix_now};
 use axum::extract::{ConnectInfo, Path, State};
@@ -36,7 +36,7 @@ pub async fn enable(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<EnableReq>,
 ) -> Result<Json<Value>, AppError> {
     let slug = if req.slug.trim().is_empty() {
@@ -55,7 +55,7 @@ pub async fn enable(
     audit::log(&st.db, &user.username, &ip.to_string(), "status_enable", &slug).await;
     Ok(Json(json!({
         "slug": slug,
-        "url": format!("{}/status/{}", st.cfg.server.public_url.trim_end_matches('/'), slug),
+        "url": format!("{}/status/{}", st.public_url().trim_end_matches('/'), slug),
     })))
 }
 
@@ -64,7 +64,7 @@ pub async fn disable(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
 ) -> Result<Json<Value>, AppError> {
     set_setting(&st.db, SLUG_KEY, "").await?;
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());

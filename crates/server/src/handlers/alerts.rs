@@ -2,12 +2,12 @@
 //! 输入严格校验:指标/比较符/渠道类型走白名单枚举,URL 交由 SSRF 加固客户端处理。
 
 use crate::alerts::{
-    valid_channel_kind, valid_chat_id, valid_comparator, valid_metric, valid_severity,
-    valid_telegram_token,
+    valid_channel_kind, valid_chat_id, valid_comparator, valid_metric, valid_roc_metric,
+    valid_severity, valid_telegram_token,
 };
 use crate::audit;
 use crate::errors::AppError;
-use crate::session::SessionUser;
+use crate::session::{SessionAdmin, SessionUser};
 use crate::state::AppState;
 use crate::util::{client_ip, unix_now};
 use axum::extract::{ConnectInfo, Path, State};
@@ -36,6 +36,9 @@ pub struct RuleReq {
     node_id: Option<i64>,
     #[serde(default = "default_warning")]
     severity: String,
+    /// comparator="roc" 时:变化率比较的回看窗口(秒)。
+    #[serde(default)]
+    roc_window_secs: i64,
 }
 
 fn default_gt() -> String {
@@ -142,7 +145,7 @@ pub async fn list_rules(State(st): State<AppState>, _u: SessionUser) -> Result<J
         r#"SELECT r.id as "id!", r.name as "name!", r.metric as "metric!",
                   r.comparator as "comparator!", r.threshold as "threshold!: f64",
                   r.duration_secs as "duration_secs!", r.node_id, r.enabled as "enabled!: i64",
-                  r.severity as "severity!", n.name as node_name
+                  r.severity as "severity!", r.roc_window_secs as "roc_window_secs!", n.name as node_name
            FROM alert_rules r LEFT JOIN nodes n ON n.id = r.node_id
            ORDER BY r.id DESC"#
     )
@@ -155,7 +158,7 @@ pub async fn list_rules(State(st): State<AppState>, _u: SessionUser) -> Result<J
                 "id": r.id, "name": r.name, "metric": r.metric, "comparator": r.comparator,
                 "threshold": r.threshold, "duration_secs": r.duration_secs,
                 "node_id": r.node_id, "node_name": r.node_name, "enabled": r.enabled != 0,
-                "severity": r.severity,
+                "severity": r.severity, "roc_window_secs": r.roc_window_secs,
             })
         })
         .collect();
@@ -167,7 +170,7 @@ pub async fn create_rule(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<RuleReq>,
 ) -> Result<Json<Value>, AppError> {
     let name = outpost_common::clean_str(&req.name, 64);
@@ -189,6 +192,20 @@ pub async fn create_rule(
     if !valid_severity(&req.severity) {
         return Err(AppError::bad("严重度需为 info/warning/critical"));
     }
+    let roc_window_secs = if req.comparator == "roc" {
+        if !valid_roc_metric(&req.metric) {
+            return Err(AppError::bad("变化率条件仅支持 CPU/内存/磁盘/Swap 使用率与 1 分钟负载"));
+        }
+        if !(30..=86400).contains(&req.roc_window_secs) {
+            return Err(AppError::bad("变化率窗口需在 30~86400 秒"));
+        }
+        if req.threshold <= 0.0 {
+            return Err(AppError::bad("变化率阈值需大于 0"));
+        }
+        req.roc_window_secs
+    } else {
+        0
+    };
     // 校验 node_id 存在(避免悬挂引用/越权探测)
     if let Some(nid) = req.node_id {
         let exists = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM nodes WHERE id = ?1"#, nid)
@@ -206,9 +223,9 @@ pub async fn create_rule(
     }
     let now = unix_now();
     let r = sqlx::query!(
-        "INSERT INTO alert_rules(name, metric, comparator, threshold, duration_secs, node_id, severity, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        name, req.metric, req.comparator, req.threshold, req.duration_secs, req.node_id, req.severity, now
+        "INSERT INTO alert_rules(name, metric, comparator, threshold, duration_secs, node_id, severity, created_at, roc_window_secs)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        name, req.metric, req.comparator, req.threshold, req.duration_secs, req.node_id, req.severity, now, roc_window_secs
     )
     .execute(&st.db)
     .await?;
@@ -222,7 +239,7 @@ pub async fn toggle_rule(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let r = sqlx::query!("UPDATE alert_rules SET enabled = 1 - enabled WHERE id = ?1", id)
@@ -248,7 +265,7 @@ pub async fn delete_rule(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let r = sqlx::query!("DELETE FROM alert_rules WHERE id = ?1", id).execute(&st.db).await?;
@@ -346,7 +363,7 @@ pub async fn create_channel(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<ChannelReq>,
 ) -> Result<Json<Value>, AppError> {
     let name = outpost_common::clean_str(&req.name, 64);
@@ -383,7 +400,7 @@ pub async fn test_channel(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let row = sqlx::query!(
@@ -416,7 +433,7 @@ pub async fn delete_channel(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let r = sqlx::query!("DELETE FROM notify_channels WHERE id = ?1", id).execute(&st.db).await?;
@@ -480,7 +497,7 @@ pub async fn create_silence(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<SilenceReq>,
 ) -> Result<Json<Value>, AppError> {
     if !(60..=30 * 86400).contains(&req.duration_secs) {
@@ -528,7 +545,7 @@ pub async fn delete_silence(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let r = sqlx::query!("DELETE FROM alert_silences WHERE id = ?1", id).execute(&st.db).await?;
@@ -557,7 +574,7 @@ pub async fn set_renotify(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
     Json(req): Json<RenotifyReq>,
 ) -> Result<Json<Value>, AppError> {
     if req.secs != 0 && !(300..=7 * 86400).contains(&req.secs) {

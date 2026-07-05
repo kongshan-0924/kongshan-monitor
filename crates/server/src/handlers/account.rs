@@ -2,7 +2,7 @@
 
 use crate::audit;
 use crate::errors::AppError;
-use crate::session::SessionUser;
+use crate::session::{SessionAdmin, SessionUser};
 use crate::state::AppState;
 use crate::util::{client_ip, unix_now};
 use axum::extract::{ConnectInfo, Path, State};
@@ -80,7 +80,7 @@ pub async fn backup(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    user: SessionUser,
+    user: SessionAdmin,
 ) -> Result<Response, AppError> {
     // 临时文件放在 db 同目录(同一挂载,保证 VACUUM INTO 可写)
     let base = std::path::Path::new(&st.cfg.storage.db_path);
