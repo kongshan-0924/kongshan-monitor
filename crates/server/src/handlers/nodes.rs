@@ -143,8 +143,8 @@ pub async fn create(
         0
     };
     let res = sqlx::query!(
-        "INSERT INTO nodes(name, grp, created_at, traffic_reset_enabled, traffic_reset_day, traffic_period_start)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO nodes(name, grp, created_at, traffic_reset_enabled, traffic_reset_day, traffic_period_start, sort_order)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM nodes))",
         name,
         grp,
         now,
@@ -188,11 +188,12 @@ async fn node_summary(st: &AppState, interval: i64) -> Result<Vec<Value>, AppErr
                   token_hash, registered_at, last_seen,
                   hostname as "hostname!", os as "os!", kernel as "kernel!", arch as "arch!",
                   cores as "cores!: i64", mem_total as "mem_total!: i64",
-                  agent_version as "agent_version!",
+                  agent_version as "agent_version!", last_ip as "last_ip!",
                   traffic_rx_total as "traffic_rx_total!: i64", traffic_tx_total as "traffic_tx_total!: i64",
                   traffic_period_start as "traffic_period_start!: i64",
                   traffic_reset_enabled as "traffic_reset_enabled!: i64",
-                  traffic_reset_day as "traffic_reset_day!: i64"
+                  traffic_reset_day as "traffic_reset_day!: i64",
+                  sort_order as "sort_order!: i64"
            FROM nodes ORDER BY id"#
     )
     .fetch_all(&st.db)
@@ -236,11 +237,13 @@ async fn node_summary(st: &AppState, interval: i64) -> Result<Vec<Value>, AppErr
             "cores": r.cores,
             "mem_total": r.mem_total,
             "agent_version": r.agent_version,
+            "last_ip": r.last_ip,
             "traffic_rx_total": r.traffic_rx_total,
             "traffic_tx_total": r.traffic_tx_total,
             "traffic_period_start": r.traffic_period_start,
             "traffic_reset_enabled": r.traffic_reset_enabled != 0,
             "traffic_reset_day": r.traffic_reset_day,
+            "sort_order": r.sort_order,
             "latest": latest.map(|m| json!({
                 "ts": m.ts, "cpu_pct": m.cpu_pct,
                 "load1": m.load1, "load5": m.load5, "load15": m.load15,
@@ -282,7 +285,7 @@ pub async fn detail(
                   token_hash, created_at as "created_at!", registered_at, last_seen,
                   hostname as "hostname!", os as "os!", kernel as "kernel!", arch as "arch!",
                   cores as "cores!: i64", mem_total as "mem_total!: i64",
-                  agent_version as "agent_version!",
+                  agent_version as "agent_version!", last_ip as "last_ip!",
                   traffic_rx_total as "traffic_rx_total!: i64", traffic_tx_total as "traffic_tx_total!: i64",
                   traffic_period_start as "traffic_period_start!: i64",
                   traffic_reset_enabled as "traffic_reset_enabled!: i64",
@@ -325,6 +328,7 @@ pub async fn detail(
             "last_seen": r.last_seen,
             "hostname": r.hostname, "os": r.os, "kernel": r.kernel, "arch": r.arch,
             "cores": r.cores, "mem_total": r.mem_total, "agent_version": r.agent_version,
+            "last_ip": r.last_ip,
             "traffic_rx_total": r.traffic_rx_total, "traffic_tx_total": r.traffic_tx_total,
             "traffic_period_start": r.traffic_period_start,
             "traffic_reset_enabled": r.traffic_reset_enabled != 0,
@@ -600,6 +604,32 @@ pub async fn batch(
                 affected += u64::from(r.rows_affected() == 1);
             }
         }
+        "upgrade" => {
+            // 触发在线 agent 远程自升级(规范 6.4 红线破例,见 crates/common 模块文档与
+            // SECURITY_AUDIT 附录 F)。仅对当前有活跃 WS 连接的节点生效;离线节点原样跳过,
+            // 不排队、不重试,管理员可从响应的 offline 列表得知需另行手动升级。
+            let mut offline = Vec::new();
+            for id in &req.ids {
+                let sent = {
+                    let m = st.upgrade_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    m.get(id).is_some_and(|tx| tx.send(()).is_ok())
+                };
+                if sent {
+                    affected += 1;
+                } else {
+                    offline.push(*id);
+                }
+            }
+            audit::log(
+                &st.db,
+                &user.username,
+                &ip,
+                "node_batch",
+                &format!("upgrade x{} affected={}", req.ids.len(), affected),
+            )
+            .await;
+            return Ok(Json(json!({ "ok": true, "affected": affected, "offline": offline })));
+        }
         _ => return Err(AppError::bad("不支持的批量操作")),
     }
     audit::log(
@@ -611,6 +641,37 @@ pub async fn batch(
     )
     .await;
     Ok(Json(json!({ "ok": true, "affected": affected })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReorderReq {
+    /// 完整节点 id 列表,顺序即展示顺序(数组下标写入 sort_order)。
+    ids: Vec<i64>,
+}
+
+/// POST /api/nodes/reorder — 保存服务器列表手动拖拽排序。
+pub async fn reorder(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: SessionAdmin,
+    Json(req): Json<ReorderReq>,
+) -> Result<Json<Value>, AppError> {
+    if req.ids.is_empty() || req.ids.len() > 500 {
+        return Err(AppError::bad("排序数量需为 1~500"));
+    }
+    let mut tx = st.db.begin().await?;
+    for (i, id) in req.ids.iter().enumerate() {
+        let order = i as i64;
+        sqlx::query!("UPDATE nodes SET sort_order = ?1 WHERE id = ?2", order, id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
+    audit::log(&st.db, &user.username, &ip.to_string(), "node_reorder", &format!("{} 个节点", req.ids.len())).await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// DELETE /api/nodes/{id} — 级联删除指标与密钥,token 随之失效。

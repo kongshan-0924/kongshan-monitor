@@ -52,6 +52,10 @@ pub async fn upgrade(
     let node_id = r.id;
     let max = st.cfg.metrics.ws_max_message_bytes;
     tracing::info!(node_id, %ip, "agent 已连接");
+    let ip_str = ip.to_string();
+    sqlx::query!("UPDATE nodes SET last_ip = ?1 WHERE id = ?2", ip_str, node_id)
+        .execute(&st.db)
+        .await?;
     Ok(ws
         .max_message_size(max)
         .max_frame_size(max)
@@ -120,6 +124,14 @@ async fn conn_loop(st: AppState, mut sock: WebSocket, node_id: i64) {
         }
     }
 
+    // 登记升级触发通道:后续「服务器管理」批量升级按 node_id 找到本连接下发
+    // 零参数的 ServerToAgent::Upgrade(见 crates/common 模块文档的红线破例说明)。
+    let (upgrade_tx, mut upgrade_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    {
+        let mut m = st.upgrade_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        m.insert(node_id, upgrade_tx);
+    }
+
     let mut ping = tokio::time::interval(Duration::from_secs(30));
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_activity = tokio::time::Instant::now();
@@ -150,6 +162,12 @@ async fn conn_loop(st: AppState, mut sock: WebSocket, node_id: i64) {
                     if let Ok(s) = serde_json::to_string(&m) {
                         if sock.send(Message::Text(s.into())).await.is_err() { break; }
                     }
+                }
+            }
+            Some(()) = upgrade_rx.recv() => {
+                tracing::warn!(node_id, "管理员触发远程升级(规范 6.4 红线破例,见 SECURITY_AUDIT 附录 F)");
+                if let Ok(s) = serde_json::to_string(&ServerToAgent::Upgrade) {
+                    if sock.send(Message::Text(s.into())).await.is_err() { break; }
                 }
             }
             incoming = sock.recv() => {
@@ -197,6 +215,10 @@ async fn conn_loop(st: AppState, mut sock: WebSocket, node_id: i64) {
                 }
             }
         }
+    }
+    {
+        let mut m = st.upgrade_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        m.remove(&node_id);
     }
     tracing::info!(node_id, "agent 连接结束");
 }

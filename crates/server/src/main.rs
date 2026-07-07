@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// serde_json 的 json! 宏按字段数展开,大对象字面量(如节点概览 JSON)容易超出默认递归限制。
+#![recursion_limit = "256"]
 //! outpost-server:安全优先的私有化服务器监控面板。
 
 mod alerts;
@@ -156,6 +158,7 @@ async fn build_state(cfg: Config) -> Result<AppState, String> {
         artifacts,
         alert_rt: alerts::AlertRuntime::default(),
         notify_throttle: std::sync::Mutex::new(std::collections::HashMap::new()),
+        upgrade_tx: std::sync::Mutex::new(std::collections::HashMap::new()),
     }))
 }
 
@@ -177,6 +180,7 @@ fn build_router(st: AppState) -> Router {
         .route("/api/users/{id}/role", post(handlers::users::set_role))
         .route("/api/nodes", get(handlers::nodes::list).post(handlers::nodes::create))
         .route("/api/nodes/batch", post(handlers::nodes::batch))
+        .route("/api/nodes/reorder", post(handlers::nodes::reorder))
         .route("/api/nodes/{id}", get(handlers::nodes::detail).delete(handlers::nodes::delete))
         .route("/api/nodes/{id}/metrics", get(handlers::nodes::history))
         .route("/api/overview/trend", get(handlers::nodes::overview_trend))

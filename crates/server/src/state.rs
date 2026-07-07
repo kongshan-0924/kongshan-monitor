@@ -3,8 +3,9 @@
 use crate::config::Config;
 use crate::ratelimit::{LoginGuard, RateLimiter};
 use sqlx::SqlitePool;
-use std::sync::{Arc, RwLock};
-use tokio::sync::{broadcast, watch};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, watch};
 
 /// 运行时可变的对外访问地址(设置页可修改,立即生效,无需重启)。
 /// 初值取自 `settings` 表(不存在则播种 config.toml 的 `server.public_url`/`extra_origins`)。
@@ -44,6 +45,9 @@ pub struct Inner {
     pub alert_rt: crate::alerts::AlertRuntime,
     /// 通知去重节流:(channel_id, text_hash) -> 上次发送时刻。
     pub notify_throttle: std::sync::Mutex<std::collections::HashMap<(i64, u64), i64>>,
+    /// 在线 agent 的升级触发通道(node_id -> sender);仅用于按需下发零参数的
+    /// [`outpost_common::ServerToAgent::Upgrade`],不承载任何可变内容。
+    pub upgrade_tx: Mutex<HashMap<i64, mpsc::UnboundedSender<()>>>,
 }
 
 pub type AppState = Arc<Inner>;
