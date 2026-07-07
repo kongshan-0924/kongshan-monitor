@@ -2,6 +2,9 @@
 //! outpost-agent:只读采集 + WSS 上报。
 //! 安全要点:严格 TLS 校验(自定义 CA 亦是校验而非跳过)、token 不落日志、
 //! 下行消息强类型白名单、断线指数退避、单线程小内存运行时。
+//! 例外:`ServerToAgent::Upgrade`(规范 6.4 红线破例,见 crates/common 模块文档
+//! 与 SECURITY_AUDIT 附录 F)——本进程收到后不自行提权,仅调用窄作用域
+//! sudoers 授权的固定路径 root 助手脚本(零参数),由助手完成下载校验+替换+重启。
 
 mod collect;
 mod config;
@@ -25,6 +28,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// 远程升级触发 socket 的固定路径:由 install.sh 写好的 systemd socket 单元监听,
+/// 权限 root:outpost-agent 0660。仅需成功 connect(哪怕立即断开)即可让 systemd 拉起
+/// 对应的独立 oneshot 升级单元,不依赖 sudo/pkexec 等可能未安装的外部工具。
+const UPGRADE_SOCKET_PATH: &str = "/run/outpost-agent-upgrade.sock";
 
 fn main() -> ExitCode {
     let mut cfg_path = std::env::var("OUTPOST_AGENT_CONFIG")
@@ -339,6 +346,24 @@ async fn session(
                                     tick = tokio::time::interval(Duration::from_secs(u64::from(v)));
                                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                                 }
+                            }
+                            Ok(ServerToAgent::Upgrade) => {
+                                // 规范 6.4 红线破例(见 crates/common 模块文档 + SECURITY_AUDIT 附录 F):
+                                // 零参数触发,本进程不提权。连接一个 root:outpost-agent 组可写的
+                                // socket-activated unix socket 即可让 systemd(已是 root)拉起独立的
+                                // 升级单元(不套用本服务的 ProtectSystem=strict 沙箱),由它完成下载
+                                // 校验+替换+重启;成功后本进程会被一并重启替换。改用 systemd socket
+                                // activation 而非 sudo,是因为不少精简云主机镜像根本不预装 sudo——
+                                // 这个机制只依赖 systemd 本身(agent/server 已强依赖),不需要额外
+                                // 二进制或授权文件是否存在。旧版 install.sh 装的节点没有这个 socket
+                                // 单元,连接会直接失败,只记录日志、不影响正常上报。
+                                log_warn!("收到服务端远程升级触发,连接升级 socket");
+                                tokio::task::spawn_blocking(|| {
+                                    match std::os::unix::net::UnixStream::connect(UPGRADE_SOCKET_PATH) {
+                                        Ok(_) => log_info!("已触发升级单元,等待 systemd 重启替换本进程"),
+                                        Err(e) => log_error!("升级触发失败(可能未安装升级 socket 单元): {e}"),
+                                    }
+                                });
                             }
                             Err(e) => log_warn!("忽略无法识别的下行消息: {e}"),
                         }

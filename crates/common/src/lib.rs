@@ -3,8 +3,20 @@
 //!
 //! 安全考量:
 //! - 所有入站消息类型均 `deny_unknown_fields`,强类型 enum,杜绝字段漂移与夹带。
-//! - 下行(server → agent)消息是严格白名单 enum([`ServerToAgent`]),
-//!   不存在能承载命令/脚本的变体(规范 6.4 红线)。
+//! - 下行(server → agent)消息是严格白名单 enum([`ServerToAgent`])。
+//!   规范 6.4 红线原为"不存在能承载命令/脚本的变体";2026-07 经用户明确知情
+//!   并二次确认后,为支持后台批量远程升级破例新增 [`ServerToAgent::Upgrade`]。
+//!   该变体本身不携带任何参数(URL/路径/版本),agent 收到后仅使用其本地
+//!   已配置的 server 地址走既有的"清单+SHA-256 校验"流程(等价于管理员手动跑
+//!   upgrade.sh),不引入"服务端可指定任意下载源/任意命令"的新增攻击面;但
+//!   确实将信任模型从"即使 server 被攻破,下行消息也无法致使 agent 执行新代码"
+//!   放宽为"server 被攻破可致使其管理的全部 agent 拉取并安装其提供的二进制"
+//!   ——与规范 6.2.5"假设 server 也可能被攻破"的既有威胁模型存在张力,
+//!   等同于绝大多数软件自动更新机制默认承担的信任假设。执行侧仍要求 agent
+//!   通过连接一个 root:outpost-agent 组可写的 systemd socket-activated unix
+//!   socket 来触发固定路径、零参数的 root 助手脚本(不经 sudo/setuid——很多
+//!   精简云主机镜像不预装 sudo,socket activation 只依赖 systemd 本身),
+//!   不允许 agent 进程本身获得 root、也不允许下行消息携带任何可变参数。
 //! - 提供集中式清洗/校验([`validate_and_clean_metrics`]、[`clean_str`]),
 //!   server 在入库前必须调用;字符串一律去控制字符并限长,数值一律限界。
 
@@ -190,13 +202,20 @@ pub enum AgentToServer {
 
 /// server → agent 下行消息:**严格白名单**。
 ///
-/// 规范 6.4 红线:此 enum 永远不得加入任何能携带命令、脚本、路径、
-/// 可执行内容的变体。新增变体必须经安全评审。
+/// 规范 6.4 红线:新增变体必须经安全评审,不得携带可变参数(URL/路径/命令行)。
+/// [`ServerToAgent::Upgrade`] 是该红线下唯一破例(见模块文档顶部说明与
+/// SECURITY_AUDIT.md 附录 F):它是零参数触发器,agent 收到后仍只走本地
+/// 已配置 server 的既有清单校验流程,新增变体本身不携带任何攻击者可控内容。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ServerToAgent {
     /// 更新上报间隔(秒)。agent 端 clamp 到 [1, 3600]。
     UpdateConfig { report_interval_secs: u32 },
+    /// 触发一次 agent 自升级(零参数;agent 走本地已配置 server 的清单+SHA-256
+    /// 校验流程,通过连接 systemd socket-activated unix socket 触发 root 助手
+    /// 完成下载校验+替换+重启,agent 进程本身不提权、不经 sudo)。仅管理员可从
+    /// 「服务器管理」批量触发。
+    Upgrade,
 }
 
 // ---------------------------------------------------------------------------

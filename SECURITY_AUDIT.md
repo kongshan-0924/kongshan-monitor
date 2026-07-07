@@ -240,3 +240,137 @@ TOTP 无重放计数(需先破 TLS)、限速/退避为内存态(重启重置,单
 | **流量统计(累计 + 可选按月清零)** | 新增 `traffic_reset_enabled`/`traffic_reset_day` 仅限创建/编辑节点端点(均 `SessionAdmin`),`reset_day` 服务端强校验 1~28;累计值来自已清洗的 `net_rx_bps`/`net_tx_bps`(与其余指标同一清洗管线,非用户可直接控制的原始输入);月份边界计算为纯整数日历算法(自实现,零新增依赖,配 5 项单测覆盖闰年/世纪闰年例外/跨年/跨月边界);断线重连后单次上报的"计入时长"设上限(`max(interval×3, 30s)`),避免长时间离线重连时把整段离线时间乘以瞬时速率造成流量假象 |
 
 进程列表"网速"列与 P2-4 一样经用户确认评估后**明确不做**:需 agent 具备跨用户读取 `/proc/[pid]/fd` 的权限(root 或 `CAP_SYS_PTRACE`+`CAP_DAC_READ_SEARCH`),会改变 agent 现有零特权模型,判定收益/风险比不划算,故只做了排序、未做该列。
+
+## 附录 F:服务器管理批量远程升级 agent(2026-07-06)——正式记录规范 6.4 红线破例
+
+用户在提出"服务器排序/分组下拉/进程排序细化/图表展示/品牌页脚"等一批 UI 需求的同时,
+要求新增"选中多台服务器一键触发远程升级 agent"。这是本项目迄今唯一一次**主动打破**
+既有安全红线的功能,记录如下,供后续审计与运维参考。
+
+**被打破的既有原则(均在代码注释与本文件中原有明确表述):**
+1. `crates/common/src/lib.rs` 模块文档 + `ServerToAgent` enum 文档:"规范 6.4 红线——
+   下行(server→agent)消息严格白名单,不存在能承载命令/脚本的变体"。
+2. `crates/agent/src/main.rs` 下行消息处理注释:"服务端也可能被攻破:严格解析,
+   畸形一律忽略(规范 6.2.5)"——即 agent 的既有威胁模型显式假设 server 自身
+   可能被攻破,下行通道因此被设计为即使被攻破的 server 也无法致使 agent 执行新代码。
+3. `crates/agent/src/collect.rs` systemctl 只读探测注释:"绝不执行 start/stop/restart
+   等控制命令"。
+
+**决策过程**:本次改动前先向用户说明了两种实现方式的风险差异(批量生成手动命令 vs
+服务端真正远程触发),用户明确选择后者;进一步展示了上述第 1 条红线的具体文字后,
+再次征询确认,用户仍选择"确认破例,按真升级实现"。两轮确认均记录在会话历史中。
+
+**采用的设计(在"必须破例"的前提下,尽量收窄新增攻击面)**:
+- `ServerToAgent::Upgrade` 是零参数触发器,不携带 URL/路径/命令行任何可变内容;
+  agent 收到后仍然只是"触发",走的是**本地已配置** server 地址的既有清单+SHA-256
+  校验流程(与管理员手动执行 `upgrade.sh` 完全一致的信任边界),不引入
+  "server 可指定任意下载源/任意命令"的新增能力。
+- agent 进程本身**不提权**:通过 `install.sh` 预先写好的窄作用域 sudoers 规则
+  (`outpost-agent ALL=(root) NOPASSWD: <systemctl> start outpost-agent-upgrade.service`,
+  命令与单元名均固定、不接受外部输入),仅能启动一个**独立**的、不套用
+  `outpost-agent.service` 沙箱(`ProtectSystem=strict` 等)的 oneshot 单元;
+  真正的"下载校验+替换二进制+重启服务"逻辑在这个独立单元里以 root 执行,
+  agent 侧进程本身自始至终是无权限账号。
+- 为使 `sudo` 的 setuid 机制生效,被迫从 `outpost-agent.service` 移除了
+  `NoNewPrivileges=true`(该 prctl 位会让 setuid 完全失效,是此前加固清单里
+  专门为防提权而设的一项,现为支持这个明确授权的例外场景而移除;其余全部
+  沙箱项——`ProtectSystem`/`ProtectHome`/`RestrictNamespaces`/`SystemCallFilter`
+  等——原样保留)。
+- `outpost-agent-upgrade-helper` 脚本本身零参数,server/CA 地址从本机
+  `/etc/outpost-agent/config.toml` 读取(该文件 `root:outpost-agent 0640`,
+  低权限 agent 账号只能读、不能写,无法反向篡改升级目标)。
+- 服务端侧:`upgrade_tx`(node_id → 单发 mpsc sender)登记在线 WS 连接,
+  批量触发端点(`POST /api/nodes/batch {action:"upgrade"}`,`SessionAdmin`)
+  仅对当前有活跃连接的节点下发,离线节点原样跳过并在响应里显式列出
+  (`offline: [...]`),避免"静默失败"造成误判已升级。全程无 ack 回执——
+  触发成功只代表 WS 消息已送达,不代表 agent 侧升级最终成功,需管理员
+  稍后自行核对 Agent 版本号。
+
+**明确的遗留风险(用户已知悉并接受)**:
+- 若 server 或某条已认证的管理员会话被攻破,攻击者现在**可以**让其管辖的全部
+  在线 agent 拉取并安装该 server 提供的任意二进制——这与绝大多数软件自动更新
+  机制默认承担的信任假设等价,但相对本项目此前"即使 server 被攻破也无法致使
+  agent 执行新代码"的更严格默认值,是一次实质性放宽。
+- 仅新装/重新执行过新版 `install.sh` 的节点才具备 sudoers + 独立 unit,老节点
+  (如本轮之前已用旧版 install.sh 部署的 Hermes/PVE/Nas 等)不受影响,远程触发
+  会因 sudo 权限不足而静默失败(agent 侧日志可见),需继续用 `upgrade.sh` 手动升级。
+- 本机(macOS 开发机)无法验证 systemd sandboxing 下 `sudo`→D-Bus→独立 unit
+  的实际逃逸行为,已完成的是代码编译 + clippy 全绿 + HTTP/WS 层逻辑的本地验证;
+  **建议先在 cc(测试环境)新装一个节点跑通一次真实的远程升级触发,确认
+  sudoers/oneshot unit 组合按预期工作后,再考虑推广到家庭服务器现网节点**。
+
+### 补充修正(2026-07-06,同日):sudo 方案在真实环境实测失败,改用 systemd socket activation
+
+上述"建议先实测"的顾虑应验了——用户在家庭服务器上对 Hermes 节点(agent 1.3.3,已经过
+一次手动 `upgrade.sh` 升级,非首次接入)实际点击批量升级后无反应。排查
+`journalctl -u outpost-agent`:
+
+```
+[warn] 收到服务端远程升级触发,请求启动升级单元
+[error] 升级触发调用失败(可能未安装 sudoers 规则): No such file or directory (os error 2)
+```
+
+`os error 2`(ENOENT)不是"sudoers 规则未配置"那类权限错误,而是**`sudo` 这个可执行文件本身
+在该机器上不存在**——`command -v sudo` 确认为空。这是设计时的疏漏:想当然假设了"目标 Linux
+系统都装了 sudo",但相当一部分面向公众的精简云主机镜像(尤其海外 VPS 商提供的最小化
+Debian/Ubuntu 镜像)默认只给 root 直接登录、不预装 sudo。这不是"配置缺失"能补救的,是更
+底层的环境依赖假设错误。
+
+**修正方案**:改用 **systemd socket activation** 代替 `sudo`:
+- `install.sh` 新增 `outpost-agent-upgrade.socket` 单元,监听
+  `/run/outpost-agent-upgrade.sock`,`SocketMode=0660` + `SocketUser=root` +
+  `SocketGroup=outpost-agent`——只有 agent 自己的运行账号能连接。
+- agent 侧把原来的 `sudo -n -- systemctl start ...` 换成
+  `std::os::unix::net::UnixStream::connect(...)`:标准库自带能力,零新增依赖。
+  只要连接成功(哪怕立即断开)systemd 就会自动拉起对应的 `outpost-agent-upgrade.service`
+  oneshot 单元完成真正的下载校验+替换+重启,原理与手动 `sudo systemctl start` 完全一致,
+  只是触发方式换成了内核/systemd 原生支持、100% 存在(agent/server 已强依赖 systemd)、
+  不依赖任何可能缺失的外部工具的机制。
+- 相应移除了 install.sh 里全部 sudoers 生成/校验逻辑,不再需要判断"是否装了 sudo"。
+- 由于不再需要 `sudo` 的 setuid 机制,`outpost-agent.service` 的 `NoNewPrivileges=true`
+  加固项**已恢复开启**(此前专门为容纳 sudo 而移除,现在的触发方式完全不需要这个例外)。
+- 安全模型不变:agent 进程仍然自始至终不提权,socket 权限位保证只有它自己能触发,
+  真正的特权操作依然发生在独立、沙箱外的 oneshot 单元里。
+
+**遗留状态**:这次修正后,**仍然只有新装/重新执行过这版 install.sh 的节点才具备升级
+socket**,家庭服务器现有节点(Hermes/PVE/Nas 等)仍需重装才能获得远程升级能力,这一点
+和 sudo 方案时的限制一样,没有变得更差。
+
+### 再次补充修正(2026-07-06,同日续):Accept=no 导致同一次触发被重复执行,打满启动频率限制
+
+上一版修正部署后,在 Hermes 上用新版 `install.sh` 重装、实测了一次真实的端到端触发
+(面板点击"升级 Agent",而非 cc 上那次原理性模拟)。第一次点击(审计日志确认全程只点了
+一次,`node_batch upgrade x1 affected=1`)在 agent 侧成功触发(`已触发升级单元`,无报错),
+但 `journalctl -u outpost-agent-upgrade.socket -u outpost-agent-upgrade.service` 显示
+同一个连接在同一秒内把 oneshot 服务重复拉起了 **5 次**,随后触发 systemd 默认的
+`start-limit-hit`,**把 socket 单元本身也一并拖成 `failed`**——第二次点击(20 秒后)
+连接这个已经"死掉"的 socket,报 `Connection refused`(os error 111),而不是最初 sudo
+方案那种 `No such file or directory`(os error 2)。
+
+**根因**:`outpost-agent-upgrade.socket` 用的是 `Accept=no`(默认值)——这种模式下,
+systemd 只负责监听、把连接扔进内核 backlog,**真正"取走"这个连接(`accept()`)是被拉起的
+服务自己的责任**。但 `outpost-agent-upgrade-helper` 是个完全不了解 socket activation
+协议的纯 shell 脚本,从未对传入的 fd 做任何 `accept`/读写/关闭操作。连接因此一直原封不动
+留在 backlog 里没被排空,systemd 每次跑完这个 oneshot、重新检查该 socket 时,都会认为
+"还有一个连接在等着处理",于是对**同一个从未被消费的连接**又一次拉起服务——如此循环,
+直到把 `outpost-agent-upgrade.service` 自己的启动频率限制(systemd 默认
+`StartLimitBurst=5`/`StartLimitIntervalSec=10s`)打满而进入 `failed`,连带它的触发方
+socket 也失败退出监听。
+
+**修正方案**:`Accept=no` 改成 **`Accept=yes`**——这是 systemd 官方文档里"纯触发/无需
+实际数据交换"这类场景的标准做法:改成 `Accept=yes` 后,**systemd 自己**会对每个到达的
+连接执行 `accept()`,backlog 被正确排空,不会重复触发;每个连接对应一个独立的服务实例,
+因此关联的 service 单元必须改成模板单元(`outpost-agent-upgrade@.service`,注意文件名
+里的 `@`),`install.sh` 相应做了改造(含删除旧的非模板 `.service` 文件,避免重装时新旧
+两份单元同时存在造成混淆)。助手脚本本身完全不用改——它从来不需要读写这个 fd,只是被
+动被 systemd 拉起执行既定的下载校验+替换+重启逻辑。
+
+**这一次的教训**:cc 上那次"验证"只证明了机制原理(非特权用户能连上 socket、systemd
+确实以 root 身份拉起了目标 unit),但**没有覆盖"服务不主动消费传入连接"这个 Accept=no
+特有的坑**——因为 cc 那次手工搭的测试用例本身也是同样"不 accept 传入连接"的写法,原理
+测试的局限性在于它和后来暴露问题的真实用法用的是**同一套有缺陷的配置**,不会自己暴露出
+这个问题;真正靠得住的是这次在 Hermes 上走完整产品代码 + 真实面板点击的端到端测试。
+
+**遗留状态**:同上,只有重新执行过这版 install.sh 的节点才具备修正后的 socket 配置;
+Hermes 已经历两次 install.sh(sudo 版→初版 socket 版),即将进行第三次(Accept=yes 修正版)
+以完成本次修正的实测验证。
