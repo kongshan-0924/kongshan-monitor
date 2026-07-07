@@ -120,21 +120,21 @@ function notifyDesktop(text) {
 
 /* ---------- 主题(浅/深 + 配色) ---------- */
 const THEMES = [
-  { id: "green", name: "默认", color: "#3e8e7e" },
+  { id: "apple", name: "默认", color: "#0071e3" },
+  { id: "green", name: "森林绿", color: "#3e8e7e" },
   { id: "tech", name: "科技", color: "#35c5e0" },
   { id: "minimal", name: "极简", color: "#3a3a38" },
   { id: "soft", name: "柔和", color: "#e08a5c" },
   { id: "terminal", name: "终端", color: "#3ddc7a" },
-  { id: "apple", name: "苹果", color: "#0071e3" },
   { id: "panel", name: "面板", color: "#6c5ce7" },
   { id: "ink-light", name: "水墨浅色", color: "#3f6b57" },
   { id: "ops-dark", name: "运维深色", color: "#46c08d" },
 ];
 function applyAccent(id) {
-  document.documentElement.setAttribute("data-theme", id || "green");
+  document.documentElement.setAttribute("data-theme", id || "apple");
 }
 function currentAccent() {
-  return localStorage.getItem("op-accent") || "green";
+  return localStorage.getItem("op-accent") || "apple";
 }
 function setAccent(id) {
   localStorage.setItem("op-accent", id);

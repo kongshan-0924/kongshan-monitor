@@ -133,11 +133,14 @@ function filteredSorted() {
   if (grp) list = list.filter((n) => (n.grp || "") === grp);
   if (q) list = list.filter((n) => [n.name, n.hostname, n.os, n.grp].some((s) => (s || "").toLowerCase().includes(q)));
   list.sort((a, b) => {
+    if (sort === "custom") return (a.sort_order || 0) - (b.sort_order || 0);
     if (sort === "name") return a.name.localeCompare(b.name);
     if (sort === "cpu") return ((b.latest && b.latest.cpu_pct) || 0) - ((a.latest && a.latest.cpu_pct) || 0);
     if (sort === "mem") return pct((b.latest || {}).mem_used, (b.latest || {}).mem_total) - pct((a.latest || {}).mem_used, (a.latest || {}).mem_total);
     const r = statusRank(a) - statusRank(b);
-    return r !== 0 ? r : a.name.localeCompare(b.name);
+    // 同一状态分组内,按服务器管理页拖拽设定的顺序排列(而非字母序),
+    // 这样"按状态"默认视图也能感知到拖拽调整过的顺序。
+    return r !== 0 ? r : (a.sort_order || 0) - (b.sort_order || 0);
   });
   return list;
 }
