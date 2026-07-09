@@ -29,6 +29,22 @@ pub async fn run(st: AppState) {
             Err(e) => tracing::error!(error = %e, "指标清理失败"),
         }
 
+        // detail JSON(容器/每核 CPU/进程明细)体积大、历史价值低:比原始点更早
+        // 清空为 '{}',只保留核心数值列供长期图表,压缩历史行体积(配合末尾的
+        // incremental_vacuum 回收空间)。默认 7 天,可经 settings 键 detail_retention_days 调整。
+        let ddays = crate::db::setting_i64(&st.db, "detail_retention_days", 7, 1, 3650).await;
+        let dcut = unix_now().saturating_sub(ddays.saturating_mul(86400));
+        match sqlx::query!("UPDATE metrics SET detail = '{}' WHERE ts < ?1 AND detail <> '{}'", dcut)
+            .execute(&st.db)
+            .await
+        {
+            Ok(r) if r.rows_affected() > 0 => {
+                tracing::info!(cleared = r.rows_affected(), days = ddays, "过期 detail 明细已清空");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "detail 清空失败"),
+        }
+
         // 聚合表保留更久(默认 365 天),原始点删除后仍可看低分辨率长历史
         let rdays = crate::db::setting_i64(&st.db, "rollup_retention_days", 365, 7, 3650).await;
         let rcut = unix_now().saturating_sub(rdays.saturating_mul(86400));

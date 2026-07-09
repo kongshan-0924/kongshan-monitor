@@ -43,8 +43,14 @@ function drawCurve(ctx, pts, smooth) {
     const p1 = pts[i];
     const p2 = pts[i + 1];
     const p3 = pts[i + 2] || p2;
-    const cp1x = p1.x + (p2.x - p0.x) / 6, cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6, cp2y = p2.y - (p3.y - p1.y) / 6;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    // 控制点 y 钳制到本段两端之间:三次贝塞尔受其控制点凸包约束,如此可保证
+    // 曲线不越出 [min,max],消除样条过冲(尖峰鼓包 / 速率类曲线凹到 0 以下)。
+    const lo = Math.min(p1.y, p2.y), hi = Math.max(p1.y, p2.y);
+    const clampY = (y) => (y < lo ? lo : y > hi ? hi : y);
+    const cp1y = clampY(p1.y + (p2.y - p0.y) / 6);
+    const cp2y = clampY(p2.y - (p3.y - p1.y) / 6);
     ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
   }
 }

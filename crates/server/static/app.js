@@ -168,14 +168,20 @@ function bindChrome() {
 document.addEventListener("DOMContentLoaded", bindChrome);
 
 /* ---------- WebSocket(自动重连) ---------- */
-function wsConnect(onMsg) {
+function wsConnect(onMsg, onReconnect) {
   let delay = 1000;
   let closed = false;
+  let opened = false; // 是否曾经连上过:用于区分首次连接与断线重连
   function open() {
     if (closed) return;
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const ws = new WebSocket(proto + location.host + "/ws/ui");
-    ws.onopen = () => { delay = 1000; };
+    ws.onopen = () => {
+      delay = 1000;
+      // 重连成功(非首次)后回调:让页面重新拉一次快照,避免断线期间实时值冻结成旧值
+      if (opened && onReconnect) onReconnect();
+      opened = true;
+    };
     ws.onmessage = (ev) => {
       if (typeof ev.data !== "string" || ev.data.length > 65536) return;
       let m = null;

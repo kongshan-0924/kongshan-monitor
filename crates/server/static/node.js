@@ -333,7 +333,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       charts.io.append(x.ts, [x.disk_read_bps, x.disk_write_bps]);
       charts.load.append(x.ts, [x.load1]);
     }
-  });
+  }, () => { loadHistory().catch(() => {}); }); // 断线重连后重拉历史,补上曲线缺口
 
   // ------- 管理操作(危险操作二次确认) -------
   $("#exportBtn").addEventListener("click", () => {

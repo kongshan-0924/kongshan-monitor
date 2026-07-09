@@ -6,11 +6,11 @@
 //! 与 SECURITY_AUDIT 附录 F)——本进程收到后不自行提权,仅调用窄作用域
 //! sudoers 授权的固定路径 root 助手脚本(零参数),由助手完成下载校验+替换+重启。
 
+#[macro_use]
+mod logging; // 须在其它模块之前声明,宏才对后续模块(collect/docker 等)可见
 mod collect;
 mod config;
 mod docker;
-#[macro_use]
-mod logging;
 mod parsers;
 
 use crate::collect::Sampler;

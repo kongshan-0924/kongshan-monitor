@@ -150,10 +150,24 @@ fn stats_for(id: &str) -> Option<(f64, u64, u64)> {
     Some((cpu_pct, mem_used, s.memory_stats.limit))
 }
 
-/// 采集本机运行中的容器状态(list + 逐容器 stats)。静默降级:任何一步失败都返回空列表。
+/// docker socket 读取失败是否已告警过:仅首次记 warn,避免每次采样刷屏。
+static SOCK_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 采集本机运行中的容器状态(list + 逐容器 stats)。降级返回空列表,但 socket
+/// 读不到(多为 agent 账号不在 docker 组)时首次记一条 warn 便于排障——否则面板
+/// 显示"0 容器"与"监控异常"无法区分,易被误认为假数据。
 #[must_use]
 pub fn scan_containers() -> Vec<ContainerStat> {
-    let Some(body) = http_get("/containers/json") else { return Vec::new() };
+    use std::sync::atomic::Ordering;
+    let Some(body) = http_get("/containers/json") else {
+        if !SOCK_WARNED.swap(true, Ordering::Relaxed) {
+            log_warn!(
+                "docker_stats 已开启,但读不到 {SOCK_PATH}(agent 账号需在 docker 组,等效 root,须自行评估后加入);容器列表将为空"
+            );
+        }
+        return Vec::new();
+    };
+    SOCK_WARNED.store(false, Ordering::Relaxed); // socket 恢复可达,重置以便下次故障再提示
     let Ok(list) = serde_json::from_slice::<Vec<ContainerSummary>>(&body) else { return Vec::new() };
 
     list.into_iter()

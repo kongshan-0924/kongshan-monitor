@@ -241,8 +241,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       loadAlertBadge(); load().catch(() => {});
       if (m.firing) notifyDesktop(m.text);
     }
-  });
+  }, () => { load().catch(() => {}); }); // 断线重连后重拉快照,避免实时值冻结成旧值
   setInterval(renderAll, 5000);
+  // 兜底:即便 WS 长时间抽风,也每 45 秒拉一次快照自愈,不让首页实时值长期停留在旧值
+  setInterval(() => { load().catch(() => {}); }, 45000);
 
   $("#search").addEventListener("input", renderAll);
   $("#groupFilter").addEventListener("change", renderAll);

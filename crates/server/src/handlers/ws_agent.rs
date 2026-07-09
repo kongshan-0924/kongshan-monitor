@@ -364,6 +364,16 @@ async fn handle_msg(st: &AppState, node_id: i64, m: AgentToServer) -> Result<(),
                 return Err(());
             }
 
+            // 整批补传包进单事务:N 个点从 N 次 WAL 提交降为 1 次,避免补传风暴
+            // 拖垮 SQLite 单写锁(此前每点独立 execute,曾致 INSERT 卡到十余秒、
+            // 连带其它节点的 last_seen 更新一起变慢)。
+            let mut txn = match st.db.begin().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(node_id, error = %e, "补传事务开启失败");
+                    return Err(());
+                }
+            };
             let mut inserted = 0u64;
             for mut metrics in points.into_iter().take(MAX_POINTS) {
                 let ts = metrics.ts;
@@ -405,11 +415,15 @@ async fn handle_msg(st: &AppState, node_id: i64, m: AgentToServer) -> Result<(),
                     mem_total, mem_used, mem_avail, swap_total, swap_used,
                     disk_total, disk_used, dr, dw, rx, tx, uptime, procs, detail
                 )
-                .execute(&st.db)
+                .execute(&mut *txn)
                 .await;
                 if let Ok(r) = res {
                     inserted = inserted.saturating_add(r.rows_affected());
                 }
+            }
+            if let Err(e) = txn.commit().await {
+                tracing::error!(node_id, error = %e, "补传事务提交失败");
+                return Err(());
             }
             if inserted > 0 {
                 tracing::info!(node_id, inserted, "断线补传入库");
