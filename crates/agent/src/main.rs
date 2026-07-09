@@ -193,8 +193,13 @@ async fn run(cfg: AgentConfig, token: String) -> ExitCode {
 
 /// 缓冲上限:约 1000 个采样点(有界,超限丢最旧,防内存膨胀)。
 const MAX_BUFFER: usize = 1000;
-/// 单条 Backfill 消息最多携带的点数(配合 WS 消息大小上限分块)。
+/// 单条 Backfill 消息最多携带的点数(与服务端补传突发桶 120 对齐)。
 const BACKFILL_CHUNK: usize = 120;
+/// 单条 Backfill 消息的序列化字节预算。显著小于服务端 WS 消息上限
+/// ([`outpost_common::MAX_WS_MESSAGE_BYTES`],默认 256 KiB),预留 JSON 外层与
+/// 帧头余量。容器多的节点单点较大,仅按点数上限分块会撑破消息上限 → 服务端
+/// 直接 reset 连接 → 缓冲永不清空 → 无限重连闪断,故必须叠加此字节上限组块。
+const BACKFILL_MAX_BYTES: usize = outpost_common::MAX_WS_MESSAGE_BYTES / 4 * 3;
 
 /// 入缓冲,满则丢弃最旧点。
 fn push_buffered(buf: &mut VecDeque<Metrics>, m: Metrics) {
@@ -225,8 +230,27 @@ async fn wait_and_sample(
     }
 }
 
+/// 计算队首起下一个 Backfill 组块应含的点数:点数 ≤ [`BACKFILL_CHUNK`] 且序列化
+/// 字节 ≤ [`BACKFILL_MAX_BYTES`];缓冲非空时至少取 1(保证推进,即便单点异常大,
+/// 由 [`MAX_CONTAINERS`](outpost_common::MAX_CONTAINERS) 等上限保证单点远小于预算)。
+fn backfill_chunk_len(buffer: &VecDeque<Metrics>) -> usize {
+    let mut n = 0usize;
+    let mut bytes = 0usize;
+    for m in buffer.iter().take(BACKFILL_CHUNK) {
+        // 每点序列化长度 + 1(数组分隔符估算);序列化失败视为极大以尽早收口。
+        let sz = serde_json::to_string(m).map_or(usize::MAX, |s| s.len().saturating_add(1));
+        if n > 0 && bytes.saturating_add(sz) > BACKFILL_MAX_BYTES {
+            break;
+        }
+        bytes = bytes.saturating_add(sz);
+        n += 1;
+    }
+    n
+}
+
 /// 分块把缓冲点作为 Backfill 消息发送;发送失败即返回错误且缓冲保持不变
-/// (下次重连再补传)。成功发送的块才从缓冲移除。
+/// (下次重连再补传)。成功发送的块才从缓冲移除。分块同时受点数与字节上限约束
+/// (见 [`backfill_chunk_len`]),避免容器多的节点单块撑破服务端 WS 消息上限。
 async fn flush_backfill<S>(ws: &mut S, buffer: &mut VecDeque<Metrics>) -> Result<(), String>
 where
     S: Sink<Message> + Unpin,
@@ -237,7 +261,7 @@ where
     }
     let total = buffer.len();
     while !buffer.is_empty() {
-        let n = buffer.len().min(BACKFILL_CHUNK);
+        let n = backfill_chunk_len(buffer);
         let points: Vec<Metrics> = buffer.iter().take(n).cloned().collect();
         let m = AgentToServer::Backfill { points };
         let txt = serde_json::to_string(&m).map_err(|e| format!("序列化失败: {e}"))?;
@@ -374,5 +398,100 @@ async fn session(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+mod tests {
+    use super::{backfill_chunk_len, BACKFILL_CHUNK, BACKFILL_MAX_BYTES};
+    use outpost_common::{AgentToServer, ContainerStat, Metrics, MAX_CONTAINERS, MAX_WS_MESSAGE_BYTES};
+    use std::collections::VecDeque;
+
+    /// 构造一个带指定容器数的采样点(容器越多单点越大)。
+    fn metric(containers: usize) -> Metrics {
+        Metrics {
+            ts: 1_700_000_000,
+            cpu_pct: 3.25,
+            load1: 0.1,
+            load5: 0.2,
+            load15: 0.3,
+            mem_total: 16_000_000_000,
+            mem_used: 8_000_000_000,
+            mem_available: 8_000_000_000,
+            swap_total: 0,
+            swap_used: 0,
+            disks: Vec::new(),
+            disk_read_bps: 0,
+            disk_write_bps: 0,
+            nets: Vec::new(),
+            uptime_secs: 123_456,
+            procs: 200,
+            cpu_temp_c: None,
+            tcp_conns: None,
+            disk_read_iops: 0,
+            disk_write_iops: 0,
+            procs_watch: Vec::new(),
+            cpu_per_core: Vec::new(),
+            services: Vec::new(),
+            top_procs: Vec::new(),
+            tcp_estab: None,
+            tcp_listen: None,
+            tcp_time_wait: None,
+            containers: (0..containers)
+                .map(|i| ContainerStat {
+                    name: format!("service-container-{i:02}"),
+                    state: "running".into(),
+                    cpu_pct: 12.5,
+                    mem_used: 123_456_789,
+                    mem_limit: 987_654_321,
+                })
+                .collect(),
+        }
+    }
+
+    /// 取队首 n 个点组成 Backfill 消息后的实际序列化字节数。
+    fn chunk_bytes(buf: &VecDeque<Metrics>, n: usize) -> usize {
+        let points: Vec<Metrics> = buf.iter().take(n).cloned().collect();
+        serde_json::to_string(&AgentToServer::Backfill { points }).unwrap().len()
+    }
+
+    #[test]
+    fn small_points_chunk_by_count_cap() {
+        // 无容器的小点:应按点数上限(120)组块,且远在字节上限内。
+        let buf: VecDeque<Metrics> = (0..300).map(|_| metric(0)).collect();
+        let n = backfill_chunk_len(&buf);
+        assert_eq!(n, BACKFILL_CHUNK, "小点应按点数上限组块");
+        assert!(chunk_bytes(&buf, n) <= MAX_WS_MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn heavy_points_chunk_by_byte_budget() {
+        // 满容器(30)的节点:120 点会撑破 256 KiB,组块须被字节预算压到 120 以下,
+        // 且整条消息序列化后必须 ≤ 服务端 WS 上限。
+        let buf: VecDeque<Metrics> = (0..300).map(|_| metric(MAX_CONTAINERS)).collect();
+        let n = backfill_chunk_len(&buf);
+        assert!(n >= 1, "必须推进");
+        assert!(n < BACKFILL_CHUNK, "大点须把组块压到点数上限以下,实际 {n}");
+        let bytes = chunk_bytes(&buf, n);
+        assert!(bytes <= MAX_WS_MESSAGE_BYTES, "组块 {bytes} 字节超过 WS 上限");
+        assert!(bytes <= BACKFILL_MAX_BYTES + 64, "组块应贴近但不超字节预算");
+    }
+
+    #[test]
+    fn always_progresses_even_if_single_point_is_large() {
+        // 即便单点很大,也至少取 1 个,避免无限循环。
+        let buf: VecDeque<Metrics> = std::iter::once(metric(MAX_CONTAINERS)).collect();
+        assert_eq!(backfill_chunk_len(&buf), 1);
+    }
+
+    #[test]
+    fn regression_old_fixed_120_chunk_would_overflow() {
+        // 佐证本次修复针对的 bug:满容器的旧固定 120 分块确实超过 256 KiB 上限。
+        let buf: VecDeque<Metrics> = (0..BACKFILL_CHUNK).map(|_| metric(MAX_CONTAINERS)).collect();
+        assert!(
+            chunk_bytes(&buf, BACKFILL_CHUNK) > MAX_WS_MESSAGE_BYTES,
+            "旧固定 120 分块本应超限,否则本测试失去意义"
+        );
     }
 }
