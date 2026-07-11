@@ -129,6 +129,8 @@ const THEMES = [
   { id: "panel", name: "面板", color: "#6c5ce7" },
   { id: "ink-light", name: "水墨浅色", color: "#3f6b57" },
   { id: "ops-dark", name: "运维深色", color: "#46c08d" },
+  { id: "astro", name: "观星", color: "#d4a94e" },
+  { id: "aura", name: "流光", color: "#7c6cf0" },
 ];
 function applyAccent(id) {
   document.documentElement.setAttribute("data-theme", id || "apple");
@@ -146,6 +148,19 @@ function setAccent(id) {
   if (saved === "dark") document.documentElement.classList.add("dark");
   if (saved === "light") document.documentElement.classList.add("light");
   applyAccent(currentAccent());
+})();
+/* 流光主题(aura)的光标跟随柔光:把指针在卡片内的相对位置写进 --gx/--gy,
+   CSS 侧用它定位径向渐变。仅精确指针设备启用;非 aura 主题时零开销早退。 */
+(function auraGlow() {
+  if (!matchMedia("(pointer: fine)").matches) return;
+  document.addEventListener("mousemove", (e) => {
+    if (document.documentElement.getAttribute("data-theme") !== "aura") return;
+    const t = e.target.closest(".card, .sum, .node-card, .stat, .chart-card");
+    if (!t) return;
+    const r = t.getBoundingClientRect();
+    t.style.setProperty("--gx", (((e.clientX - r.left) / r.width) * 100).toFixed(1) + "%");
+    t.style.setProperty("--gy", (((e.clientY - r.top) / r.height) * 100).toFixed(1) + "%");
+  }, { passive: true });
 })();
 function bindChrome() {
   myRole();

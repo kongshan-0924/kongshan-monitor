@@ -760,3 +760,273 @@ html[data-theme="ink-light"] .brand-dot, html[data-theme="ops-dark"] .brand-dot 
 /* 键盘可达的可排序表头:聚焦时给出清晰指示(仅键盘焦点,不影响鼠标点击)。 */
 .th-sort { cursor: pointer; }
 .th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+
+/* ============================================================
+   观星主题(astro):古典天文的昼夜双貌——浅色是"古星图纸"(米黄纸底 + 赭墨
+   注记 + 黄铜点缀 + 纸面星点),深色是"观测夜空"(午夜靛蓝 + 星光暖白 + 鎏金
+   + CSS 星野)。衬线体标题与数字呼应古星图刻印;四芒星品牌点、✦ 导航标记、
+   KPI/对话框双线框(古地图边框)。与 tech(蓝图控制台)/terminal(CRT)同级的
+   完整视觉语言,但循 apple/panel 模式支持浅深双模:昼读图,夜观星。
+   ============================================================ */
+html[data-theme="astro"] {
+  --bg: #f3eddc; --card: #faf6ea; --ink: #33291a; --muted: #8b7d5f; --line: #e2d8bd;
+  --accent: #a67c2e; --accent-soft: color-mix(in srgb, var(--accent) 13%, var(--card));
+  --chart1: var(--accent); --chart2: #4f6ea8; --chart3: #b45f48; --chart4: #7d6aa8;
+  --ok: #5d8a5f; --warn: #bd7326; --bad: #b4574a;
+  --shadow: 0 1px 3px rgba(70, 55, 25, 0.08);
+  --radius: 10px;
+  --astro-serif: "Iowan Old Style", "Palatino", Georgia, "Songti SC", "STSong", "Noto Serif SC", serif;
+  --astro-star: rgba(101, 82, 45, 0.15);   /* 纸面细密星点(印刷星表感) */
+  --astro-star2: rgba(101, 82, 45, 0.26);
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="astro"]:not(.light) {
+    --bg: #0c1022; --card: #141a30; --ink: #e9e4d3; --muted: #9195ad; --line: #262d4a;
+    --accent: #d4a94e; --accent-soft: color-mix(in srgb, var(--accent) 14%, var(--card));
+    --chart2: #86b7e0; --chart3: #d07a5f; --chart4: #9d8bd0;
+    --ok: #6fae7d; --warn: #dc9440; --bad: #cf6a5c;
+    --shadow: none;
+    --astro-star: rgba(226, 222, 200, 0.22); /* 星光 */
+    --astro-star2: rgba(212, 169, 78, 0.50); /* 鎏金亮星 */
+  }
+}
+html[data-theme="astro"].dark {
+  --bg: #0c1022; --card: #141a30; --ink: #e9e4d3; --muted: #9195ad; --line: #262d4a;
+  --accent: #d4a94e; --accent-soft: color-mix(in srgb, var(--accent) 14%, var(--card));
+  --chart2: #86b7e0; --chart3: #d07a5f; --chart4: #9d8bd0;
+  --ok: #6fae7d; --warn: #dc9440; --bad: #cf6a5c;
+  --shadow: none;
+  --astro-star: rgba(226, 222, 200, 0.22);
+  --astro-star2: rgba(212, 169, 78, 0.50);
+}
+/* 星野:两档大小的星点平铺(浅色=纸面印星,深色=夜空繁星),透明度极低不扰阅读 */
+html[data-theme="astro"] body {
+  background-image:
+    radial-gradient(1px 1px at 22px 34px, var(--astro-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 88px 126px, var(--astro-star) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 156px 62px, var(--astro-star2) 50%, transparent 51%),
+    radial-gradient(1px 1px at 210px 178px, var(--astro-star) 50%, transparent 51%),
+    radial-gradient(1.7px 1.7px at 58px 214px, var(--astro-star2) 50%, transparent 51%),
+    radial-gradient(1px 1px at 244px 92px, var(--astro-star) 50%, transparent 51%),
+    radial-gradient(1px 1px at 130px 246px, var(--astro-star) 50%, transparent 51%);
+  background-size: 280px 280px;
+}
+/* 衬线显示层:标题、品牌、关键数字——古星图注记气质(正文/表格仍无衬线保证可读) */
+html[data-theme="astro"] h2, html[data-theme="astro"] h3,
+html[data-theme="astro"] .brand,
+html[data-theme="astro"] .sum-val,
+html[data-theme="astro"] .stat .s-value,
+html[data-theme="astro"] .nc-name {
+  font-family: var(--astro-serif);
+}
+html[data-theme="astro"] .sum-val { font-weight: 600; }
+html[data-theme="astro"] .stat .s-value { font-weight: 600; }
+/* 四芒星品牌点(clip-path),鎏金光晕用 drop-shadow 跟随星形轮廓 */
+html[data-theme="astro"] .brand-dot {
+  width: 15px; height: 15px; border-radius: 0; box-shadow: none;
+  clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+  background: radial-gradient(circle at 50% 42%, #ffe9b3, var(--accent) 70%);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 60%, transparent));
+}
+html[data-theme="astro"] .brand-dot.big { width: 32px; height: 32px; box-shadow: none; }
+/* 导航:当前页缀 ✦(星标),悬停淡金 */
+html[data-theme="astro"] .nav a.active { background: none; color: var(--ink); font-weight: 600; }
+html[data-theme="astro"] .nav a.active::before { content: "✦ "; color: var(--accent); }
+html[data-theme="astro"] .nav a:hover { background: var(--accent-soft); }
+/* 顶栏:纸/夜空半透明 + 鎏金细底线 */
+html[data-theme="astro"] .topbar {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+}
+/* KPI 卡与对话框:双线框(外 1px + 内缩 3px 再一道发丝线),古地图/星图边框语言 */
+html[data-theme="astro"] .sum, html[data-theme="astro"] .dlg {
+  border: 1px solid var(--line);
+  box-shadow: inset 0 0 0 3px var(--card),
+    inset 0 0 0 4px color-mix(in srgb, var(--line) 75%, var(--accent) 25%),
+    var(--shadow);
+}
+/* 主按钮:鎏金底 + 墨色字(金底白字对比不足) */
+html[data-theme="astro"] .btn.primary { color: #2a1f08; font-weight: 600; }
+/* 仪表条:细线化,呼应星图刻度 */
+html[data-theme="astro"] .meter .m-bar { height: 5px; }
+html[data-theme="astro"] .meter .m-fill { border-radius: 3px; }
+/* 页脚缀星 */
+html[data-theme="astro"] .site-footer::before { content: "✦ "; color: var(--accent); opacity: 0.7; }
+html[data-theme="astro"] .site-footer::after { content: " ✦"; color: var(--accent); opacity: 0.7; }
+
+/* ============================================================
+   流光主题(aura):布局/UI/交互三重重构——
+   · 布局:顶栏取消,导航移到底部悬浮玻璃 Dock(visionOS/macOS 语言),内容顶到首屏;
+   · UI:全屏极光渐层背景 + 毛玻璃面板 + 渐变大数字 + 胶囊玻璃控件,
+     与其余主题的"素色实底卡片"体系彻底区隔;
+   · 交互:Dock 磁性放大(:has 邻项联动)、卡片光标跟随柔光(app.js 置 --gx/--gy)、
+     悬浮上浮/按压回弹、极光缓漂(prefers-reduced-motion 下全局动效开关自动关停)。
+   ============================================================ */
+html[data-theme="aura"] {
+  --bg: #eef0fa; --card: #ffffff; --ink: #23263a; --muted: #71778f; --line: rgba(120, 130, 180, 0.22);
+  --accent: #7c6cf0; --accent-soft: color-mix(in srgb, var(--accent) 14%, #ffffff);
+  --chart1: var(--accent); --chart2: #0ea5e9; --chart3: #ec4899; --chart4: #10b981;
+  --ok: #10b981; --warn: #f59e0b; --bad: #f43f5e;
+  --shadow: 0 8px 32px rgba(80, 90, 160, 0.13);
+  --radius: 20px;
+  --aura-glass: color-mix(in srgb, var(--card) 62%, transparent);
+  --aura-edge: rgba(255, 255, 255, 0.55);
+  --aura-glow: rgba(124, 108, 240, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="aura"]:not(.light) {
+    --bg: #0b0d1e; --card: #171a31; --ink: #e7e8f4; --muted: #8e93b0; --line: rgba(150, 160, 220, 0.16);
+    --accent: #8d7bff; --accent-soft: color-mix(in srgb, var(--accent) 20%, #171a31);
+    --chart2: #38bdf8; --chart3: #f472b6; --chart4: #34d399;
+    --shadow: 0 8px 32px rgba(0, 0, 0, 0.42);
+    --aura-glass: color-mix(in srgb, var(--card) 56%, transparent);
+    --aura-edge: rgba(255, 255, 255, 0.14);
+    --aura-glow: rgba(141, 123, 255, 0.20);
+  }
+}
+html[data-theme="aura"].dark {
+  --bg: #0b0d1e; --card: #171a31; --ink: #e7e8f4; --muted: #8e93b0; --line: rgba(150, 160, 220, 0.16);
+  --accent: #8d7bff; --accent-soft: color-mix(in srgb, var(--accent) 20%, #171a31);
+  --chart2: #38bdf8; --chart3: #f472b6; --chart4: #34d399;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.42);
+  --aura-glass: color-mix(in srgb, var(--card) 56%, transparent);
+  --aura-edge: rgba(255, 255, 255, 0.14);
+  --aura-glow: rgba(141, 123, 255, 0.20);
+}
+/* 极光背景:四团渐层色雾固定铺底,缓慢漂移(GPU transform,省动效时被全局开关关停) */
+html[data-theme="aura"] body { position: relative; }
+html[data-theme="aura"] body::before {
+  content: ""; position: fixed; inset: -22%; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(46% 38% at 14% 6%, color-mix(in srgb, var(--accent) 34%, transparent), transparent 68%),
+    radial-gradient(50% 42% at 86% 10%, color-mix(in srgb, var(--chart2) 30%, transparent), transparent 68%),
+    radial-gradient(54% 46% at 80% 92%, color-mix(in srgb, var(--chart3) 24%, transparent), transparent 70%),
+    radial-gradient(46% 42% at 10% 88%, color-mix(in srgb, var(--chart4) 22%, transparent), transparent 68%);
+  animation: aura-drift 30s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes aura-drift {
+  from { transform: translate3d(-1.5%, -1%, 0) scale(1); }
+  to   { transform: translate3d(1.5%, 1.5%, 0) scale(1.06); }
+}
+/* 玻璃面板:半透卡体 + 背景模糊 + 高光描边 */
+html[data-theme="aura"] .card,
+html[data-theme="aura"] .sum,
+html[data-theme="aura"] .node-card,
+html[data-theme="aura"] .stat,
+html[data-theme="aura"] .chart-card {
+  background: var(--aura-glass);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  border: 1px solid var(--aura-edge);
+  box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
+}
+/* 光标跟随柔光:app.js(auraGlow)把指针位置写进 --gx/--gy,悬停时点亮 */
+html[data-theme="aura"] .card::after,
+html[data-theme="aura"] .sum::after,
+html[data-theme="aura"] .node-card::after,
+html[data-theme="aura"] .stat::after,
+html[data-theme="aura"] .chart-card::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(280px 220px at var(--gx, 50%) var(--gy, 50%), var(--aura-glow), transparent 70%);
+  opacity: 0; transition: opacity 0.3s;
+}
+html[data-theme="aura"] .card:hover::after,
+html[data-theme="aura"] .sum:hover::after,
+html[data-theme="aura"] .node-card:hover::after,
+html[data-theme="aura"] .stat:hover::after,
+html[data-theme="aura"] .chart-card:hover::after { opacity: 1; }
+/* 悬浮上浮 + 按压回弹 */
+html[data-theme="aura"] .node-card { transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.22s; }
+html[data-theme="aura"] .node-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 18px 44px -14px color-mix(in srgb, var(--accent) 34%, rgba(20, 20, 60, 0.35));
+}
+html[data-theme="aura"] .node-card:active { transform: translateY(-1px) scale(0.985); }
+html[data-theme="aura"] .btn { transition: transform 0.15s, box-shadow 0.15s, background 0.15s; }
+html[data-theme="aura"] .btn:active { transform: scale(0.95); }
+/* 底部悬浮 Dock:顶栏整体搬到屏幕底部居中的玻璃胶囊 */
+html[data-theme="aura"] .topbar {
+  position: fixed; top: auto; bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: min(96vw, 860px);
+  z-index: 30; gap: 14px;
+  padding: 10px 16px; border-radius: 999px;
+  background: var(--aura-glass);
+  backdrop-filter: blur(22px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  border: 1px solid var(--aura-edge);
+  border-bottom: 1px solid var(--aura-edge);
+  box-shadow: 0 14px 40px -12px rgba(20, 24, 70, 0.35);
+}
+html[data-theme="aura"] body { padding-bottom: 104px; }
+html[data-theme="aura"] .wrap { margin-top: 26px; }
+/* Dock 磁性放大:悬停项放大上浮,相邻项半程联动(纯 CSS :has) */
+html[data-theme="aura"] .nav { flex: none; gap: 2px; overflow: visible; }
+html[data-theme="aura"] .nav a {
+  padding: 7px 13px; border-radius: 999px; font-weight: 500;
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.18s, color 0.18s;
+}
+html[data-theme="aura"] .nav a:hover { transform: translateY(-7px) scale(1.18); background: var(--accent-soft); color: var(--ink); }
+html[data-theme="aura"] .nav a:hover + a,
+html[data-theme="aura"] .nav a:has(+ a:hover) { transform: translateY(-3px) scale(1.08); }
+html[data-theme="aura"] .nav a:active { transform: translateY(-2px) scale(1.02); }
+html[data-theme="aura"] .nav a.active {
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--chart2) 70%, var(--accent)));
+  color: #fff;
+}
+/* KPI:超大渐变数字(带语义色的在线/离线/告警卡保持语义纯色) */
+html[data-theme="aura"] .sum-val { font-size: 32px; font-weight: 800; letter-spacing: -0.02em; }
+html[data-theme="aura"] .sum:not(.ok):not(.bad):not(.warn) .sum-val {
+  background: linear-gradient(120deg, var(--accent), var(--chart2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+/* 控件玻璃化:按钮/搜索/分段器胶囊化 */
+html[data-theme="aura"] .btn, html[data-theme="aura"] .tb-search,
+html[data-theme="aura"] .seg, html[data-theme="aura"] .chk,
+html[data-theme="aura"] .spill, html[data-theme="aura"] .pill, html[data-theme="aura"] .nc-grp {
+  border-radius: 999px;
+}
+html[data-theme="aura"] .btn {
+  background: var(--aura-glass); border-color: var(--aura-edge);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+html[data-theme="aura"] .btn.primary {
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--chart2) 65%, var(--accent)));
+  border: none; color: #fff; font-weight: 600;
+  box-shadow: 0 6px 20px -6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+html[data-theme="aura"] .btn.primary:hover { filter: brightness(1.08); }
+/* 对话框:重玻璃 + 幕布虚化 */
+html[data-theme="aura"] .dlg {
+  border-radius: 26px; border: 1px solid var(--aura-edge);
+  background: color-mix(in srgb, var(--card) 78%, transparent);
+  backdrop-filter: blur(28px) saturate(1.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+}
+html[data-theme="aura"] .dlg::backdrop { background: rgba(14, 16, 44, 0.35); backdrop-filter: blur(7px); }
+/* 仪表条:渐变液体感 */
+html[data-theme="aura"] .meter .m-bar { height: 7px; border-radius: 999px; }
+html[data-theme="aura"] .meter .m-fill { border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 75%, #fff), var(--ok)); }
+html[data-theme="aura"] .meter .m-fill.warn { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 75%, #fff), var(--warn)); }
+html[data-theme="aura"] .meter .m-fill.bad { background: linear-gradient(90deg, color-mix(in srgb, var(--bad) 75%, #fff), var(--bad)); }
+/* 品牌点:极光渐变球 */
+html[data-theme="aura"] .brand-dot {
+  background: conic-gradient(from 210deg, var(--accent), var(--chart2), var(--chart3), var(--accent));
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 0 14px -2px var(--accent);
+}
+/* 窄屏:Dock 贴边通栏,导航可横滑(放大联动关闭,避免溢出裁切抖动) */
+@media (max-width: 720px) {
+  html[data-theme="aura"] .topbar {
+    left: 10px; right: 10px; transform: none; width: auto; max-width: none;
+    border-radius: 22px; padding: 8px 12px;
+  }
+  html[data-theme="aura"] .brand { font-size: 0; gap: 0; }
+  html[data-theme="aura"] .nav { flex: 1; overflow-x: auto; scrollbar-width: none; }
+  html[data-theme="aura"] .nav a:hover,
+  html[data-theme="aura"] .nav a:hover + a,
+  html[data-theme="aura"] .nav a:has(+ a:hover) { transform: none; }
+}
