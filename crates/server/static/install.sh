@@ -1,20 +1,22 @@
 #!/bin/sh
 # outpost-agent 一键安装脚本(POSIX sh,简短可审计,无隐蔽操作)
-# 用法: sh install.sh --server https://<host:port> --key <一次性密钥> [--ca /path/ca.pem]
+# 用法: OP_KEY=<一次性密钥> sh install.sh --server https://<host:port> [--ca /path/ca.pem]
 #
 # 安全设计:
 #  - 全程 HTTPS;--ca 提供时 curl 严格用该 CA 校验(不是跳过校验)
 #  - 二进制 SHA-256 与服务端 manifest 比对,不符即终止
 #  - 创建专用低权限用户 outpost-agent;token 以 0600 写入
-#  - 一次性密钥经 stdin 传给 curl,不出现在子进程 argv
+#  - 一次性密钥经环境变量 OP_KEY 传入(不出现在本脚本 argv/进程列表);经 stdin 传给 curl
 #  - 建议:执行前先阅读本脚本(curl -fsS <server>/install.sh | less)
 set -eu
 
-SERVER="" KEY="" CA=""
+# 密钥优先从环境变量 OP_KEY 读取,随即 unset,避免被子进程(curl 等)继承或出现在 argv。
+SERVER="" KEY="${OP_KEY:-}" CA=""
+unset OP_KEY 2>/dev/null || true
 while [ $# -gt 0 ]; do
   case "$1" in
     --server) SERVER="$2"; shift 2 ;;
-    --key)    KEY="$2";    shift 2 ;;
+    --key)    KEY="$2";    shift 2 ;;   # 兼容旧安装命令;新命令改用 OP_KEY 环境变量
     --ca)     CA="$2";     shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac

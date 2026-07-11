@@ -164,7 +164,7 @@ pub async fn login(
     }
     let uname = outpost_common::clean_str(&req.username, 64);
     let now = unix_now();
-    if st.login_guard.is_locked(&uname, now) {
+    if st.login_guard.is_locked(ip, &uname, now) {
         audit::log(&st.db, &uname, &ip.to_string(), "login_locked", "退避锁定中").await;
         return Err(AppError::TooManyRequests);
     }
@@ -188,7 +188,7 @@ pub async fn login(
     };
 
     let Some(r) = row.filter(|_| ok) else {
-        let locked = st.login_guard.record_fail(&uname, now);
+        let locked = st.login_guard.record_fail(ip, &uname, now);
         audit::log(&st.db, &uname, &ip.to_string(), "login_fail", "").await;
         if locked.is_some() {
             return Err(AppError::TooManyRequests);
@@ -207,7 +207,7 @@ pub async fn login(
         let code_ok = crate::totp::verify(&r.totp_secret, code, now)
             || crate::handlers::twofa::consume_recovery(&st, r.id, code).await;
         if !code_ok {
-            let locked = st.login_guard.record_fail(&uname, now);
+            let locked = st.login_guard.record_fail(ip, &uname, now);
             audit::log(&st.db, &uname, &ip.to_string(), "login_2fa_fail", "").await;
             if locked.is_some() {
                 return Err(AppError::TooManyRequests);
@@ -216,7 +216,7 @@ pub async fn login(
         }
     }
 
-    st.login_guard.reset(&uname);
+    st.login_guard.reset(ip, &uname);
     let ua = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())

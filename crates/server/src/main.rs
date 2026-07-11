@@ -157,8 +157,10 @@ async fn build_state(cfg: Config) -> Result<AppState, String> {
         ca_fingerprint,
         artifacts,
         alert_rt: alerts::AlertRuntime::default(),
+        rule_cache: std::sync::RwLock::new(std::sync::Arc::new(Vec::new())),
         notify_throttle: std::sync::Mutex::new(std::collections::HashMap::new()),
         upgrade_tx: std::sync::Mutex::new(std::collections::HashMap::new()),
+        pending_upgrade: std::sync::Mutex::new(std::collections::HashMap::new()),
     }))
 }
 
@@ -381,6 +383,7 @@ fn main() -> ExitCode {
             }
         };
         alerts::reconcile_on_startup(&st).await;
+        alerts::reload_rules(&st).await; // 填充规则缓存,须在 patrol/首个上报读取之前
         tokio::spawn(retention::run(st.clone()));
         tokio::spawn(alerts::patrol(st.clone()));
         let app = build_router(st);

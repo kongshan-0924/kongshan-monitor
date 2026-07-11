@@ -249,7 +249,9 @@ function opChart(container, opts) {
 
   const ro = new ResizeObserver(draw);
   ro.observe(container);
-  document.addEventListener("op-theme", () => { rebuildLegend(); draw(); });
+  // 命名主题监听器,便于 destroy() 时精确移除(否则每次重建图都会累积一个 document 级监听)。
+  const onTheme = () => { rebuildLegend(); draw(); };
+  document.addEventListener("op-theme", onTheme);
 
   const controller = {
     setData(newTs, newData) { ts = newTs; data = newData; draw(); },
@@ -264,6 +266,17 @@ function opChart(container, opts) {
       draw();
     },
     draw, // 供全局展示选项切换时统一重绘
+    /* 释放图表:断开 ResizeObserver、移除主题监听、从 ALL_CHARTS 摘除、清 DOM。
+       反复重建图的页面(如对比页)必须在重建前调用,否则观察者/监听器/闭包会持续泄漏(F2)。 */
+    destroy() {
+      ro.disconnect();
+      document.removeEventListener("op-theme", onTheme);
+      const i = ALL_CHARTS.indexOf(controller);
+      if (i >= 0) ALL_CHARTS.splice(i, 1);
+      canvas.remove();
+      tip.remove();
+      legend.remove();
+    },
   };
   ALL_CHARTS.push(controller);
   return controller;

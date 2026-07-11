@@ -116,6 +116,23 @@ function setSort(key) {
   localStorage.setItem("op-srv-sort-dir", String(sortDir));
   render();
 }
+/* 可排序表头:除鼠标点击外,支持键盘(Tab 聚焦 + Enter/Space 触发),并暴露 aria-sort
+   供读屏软件播报当前排序方向(a11y)。 */
+function sortableTh(key, label) {
+  const active = sortKey === key;
+  const arrow = active ? (sortDir === 1 ? " ▲" : " ▼") : "";
+  const th = el("th", "th-sort", label + arrow);
+  th.tabIndex = 0;
+  th.setAttribute("role", "button");
+  th.setAttribute("aria-sort", active ? (sortDir === 1 ? "ascending" : "descending") : "none");
+  th.setAttribute("aria-label", "按" + label + "排序");
+  const act = () => setSort(key);
+  th.addEventListener("click", act);
+  th.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
+  });
+  return th;
+}
 function sortNodes(list) {
   // 排序列被隐藏后不再有意义,自动回退到按名称排序
   const key = (sortKey === "name" || COLS.includes(sortKey)) ? sortKey : "name";
@@ -159,17 +176,11 @@ function render() {
   if (dragSortOn) {
     head.appendChild(el("th", "nowrap", "名称"));
   } else {
-    const arrow = sortKey === "name" ? (sortDir === 1 ? " ▲" : " ▼") : "";
-    const th = el("th", "th-sort", "名称" + arrow);
-    th.addEventListener("click", () => setSort("name"));
-    head.appendChild(th);
+    head.appendChild(sortableTh("name", "名称"));
   }
   activeCols.forEach((c) => {
     if (dragSortOn) { head.appendChild(el("th", "nowrap", c.label)); return; }
-    const arrow = sortKey === c.key ? (sortDir === 1 ? " ▲" : " ▼") : "";
-    const th = el("th", "th-sort", c.label + arrow);
-    th.addEventListener("click", () => setSort(c.key));
-    head.appendChild(th);
+    head.appendChild(sortableTh(c.key, c.label));
   });
   if (admin) head.appendChild(el("th", null, "操作"));
   tbl.appendChild(head);
@@ -322,16 +333,17 @@ async function batch(action, extra) {
     SELECTED.clear(); await load(); alert("已处理 " + r.affected + " 个节点");
   } catch (e) { alert(e.error || "操作失败"); }
 }
-/* 远程升级:仅在线节点(有活跃 WS 连接)会收到触发,离线节点原样跳过,
-   不代表升级最终成功——agent 侧调用助手失败(如旧版未装 sudoers 规则)不会回传结果。 */
+/* 远程升级:在线节点立即下发;触发瞬间恰在重连的节点进入 30 秒补发窗口,重连后自动补发。
+   升级是否最终成功需稍后核对 Agent 版本——agent 侧下载/助手失败不会回传结果,可直接重试。 */
 async function batchUpgrade() {
   const ids = Array.from(SELECTED);
   if (!ids.length) return;
   try {
     const r = await api("POST", "/api/nodes/batch", { action: "upgrade", ids });
     SELECTED.clear(); await load();
-    let msg = "已触发 " + r.affected + " 个在线节点升级(实际是否升级成功需稍后在列表核对 Agent 版本)。";
-    if (r.offline && r.offline.length) msg += "\n" + r.offline.length + " 个节点当前离线,未收到触发,需另行手动升级。";
+    const queued = (r.queued && r.queued.length) || (r.offline && r.offline.length) || 0;
+    let msg = "已触发 " + r.affected + " 个节点升级(实际是否成功需稍后核对 Agent 版本)。";
+    if (queued) msg += "\n另有 " + queued + " 个节点正在重连,已排入 30 秒补发窗口,重连后自动补发;如仍未生效可稍后重试。";
     alert(msg);
   } catch (e) { alert(e.error || "操作失败"); }
 }

@@ -745,3 +745,18 @@ html[data-theme="ink-light"] .brand-dot, html[data-theme="ops-dark"] .brand-dot 
 .pager { display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 12px; }
 .pager .btn:disabled { opacity: 0.45; cursor: default; }
 .pager .btn:disabled:hover { border-color: var(--line); }
+
+/* 无障碍:尊重系统「减少动态效果」设置——关闭过渡/动画/平滑滚动,
+   避免前庭失调用户不适(WCAG 2.3.3)。功能不受影响,仅去除动效。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 键盘可达的可排序表头:聚焦时给出清晰指示(仅键盘焦点,不影响鼠标点击)。 */
+.th-sort { cursor: pointer; }
+.th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }

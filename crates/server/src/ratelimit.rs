@@ -82,9 +82,13 @@ impl Default for RateLimiter {
     }
 }
 
-/// 登录失败退避:同一账号 5 次失败后指数锁定(30s 起,封顶 1h)。
+/// 登录失败退避:同一 (来源 IP × 账号) 5 次失败后指数锁定(30s 起,封顶 1h)。
+///
+/// 按 (IP, 账号) 而非仅账号计键:否则任何知道管理员用户名的攻击者只需连续输错
+/// 即可把该账号从**所有** IP 锁死,形成拒绝服务。按来源 IP 分桶后,攻击者只能
+/// 锁住自己那个 IP,合法用户从别的 IP 仍可正常登录;跨 IP 泛洪另有 IP 级令牌桶兜底。
 pub struct LoginGuard {
-    inner: Mutex<HashMap<String, (u32, i64)>>, // username -> (fail_count, locked_until)
+    inner: Mutex<HashMap<(IpAddr, String), (u32, i64)>>, // (ip, username) -> (fail_count, locked_until)
 }
 
 const GUARD_MAX: usize = 4096;
@@ -96,18 +100,18 @@ impl LoginGuard {
     }
 
     /// 是否处于锁定期。
-    pub fn is_locked(&self, username: &str, now: i64) -> bool {
+    pub fn is_locked(&self, ip: IpAddr, username: &str, now: i64) -> bool {
         let Ok(map) = self.inner.lock() else { return false };
-        map.get(username).is_some_and(|&(_, until)| until > now)
+        map.get(&(ip, username.to_string())).is_some_and(|&(_, until)| until > now)
     }
 
     /// 记一次失败;达到阈值则锁定并返回锁定秒数。
-    pub fn record_fail(&self, username: &str, now: i64) -> Option<i64> {
+    pub fn record_fail(&self, ip: IpAddr, username: &str, now: i64) -> Option<i64> {
         let Ok(mut map) = self.inner.lock() else { return None };
         if map.len() > GUARD_MAX {
             map.retain(|_, &mut (_, until)| until > now);
         }
-        let e = map.entry(username.to_string()).or_insert((0, 0));
+        let e = map.entry((ip, username.to_string())).or_insert((0, 0));
         e.0 = e.0.saturating_add(1);
         if e.0 >= 5 {
             let exp = e.0.saturating_sub(5).min(7); // 30 * 2^n, 封顶 3840s→再夹到 3600
@@ -119,9 +123,9 @@ impl LoginGuard {
         }
     }
 
-    pub fn reset(&self, username: &str) {
+    pub fn reset(&self, ip: IpAddr, username: &str) {
         if let Ok(mut map) = self.inner.lock() {
-            map.remove(username);
+            map.remove(&(ip, username.to_string()));
         }
     }
 }
@@ -156,16 +160,19 @@ mod tests {
     fn login_guard_locks_after_5_and_backs_off() {
         let g = LoginGuard::new();
         let now = 1000;
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
         for _ in 0..4 {
-            assert!(g.record_fail("admin", now).is_none());
+            assert!(g.record_fail(ip, "admin", now).is_none());
         }
-        assert!(!g.is_locked("admin", now));
-        let lock1 = g.record_fail("admin", now).unwrap();
+        assert!(!g.is_locked(ip, "admin", now));
+        let lock1 = g.record_fail(ip, "admin", now).unwrap();
         assert_eq!(lock1, 30);
-        assert!(g.is_locked("admin", now));
-        let lock2 = g.record_fail("admin", now).unwrap();
+        assert!(g.is_locked(ip, "admin", now));
+        let lock2 = g.record_fail(ip, "admin", now).unwrap();
         assert_eq!(lock2, 60); // 指数递增
-        g.reset("admin");
-        assert!(!g.is_locked("admin", now));
+        // 另一 IP 对同一账号不受锁定影响(防单点锁死 DoS)
+        assert!(!g.is_locked("5.6.7.8".parse().unwrap(), "admin", now));
+        g.reset(ip, "admin");
+        assert!(!g.is_locked(ip, "admin", now));
     }
 }

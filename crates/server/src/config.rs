@@ -20,7 +20,10 @@ pub struct TlsCfg {
 pub struct ServerCfg {
     /// 监听地址。默认仅回环(规范 6.1.13)。
     pub listen: String,
-    /// 位于可信反向代理之后(启用 X-Real-IP 解析与 Secure Cookie)。
+    /// 位于可信反向代理之后:为 true 时才采信可信代理的 X-Real-IP 作为客户端来源 IP;
+    /// 为 false 时一律用 TCP 对端地址。默认 true。(Secure Cookie 由 `security.cookie_secure`
+    /// 独立控制,与本开关无关。)注意:置于反代之后务必保持 true,否则限速/审计/登录退避会
+    /// 把所有客户端塌缩为反代 IP,可能相互触发限流或账号锁。
     pub behind_proxy: bool,
     /// 可信代理地址列表(仅这些对端的 X-Real-IP 会被采信)。
     pub trusted_proxies: Vec<String>,
@@ -223,6 +226,11 @@ impl Config {
 
     #[must_use]
     pub fn trusted_proxy_ips(&self) -> Vec<IpAddr> {
+        // 未声明处于反代之后:一律不信任 X-Real-IP,只认 TCP 对端地址,
+        // 防止同机/直连进程伪造头绕过限速与审计溯源(规范 6.1.9)。
+        if !self.server.behind_proxy {
+            return Vec::new();
+        }
         self.server
             .trusted_proxies
             .iter()

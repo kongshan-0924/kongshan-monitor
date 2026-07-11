@@ -107,7 +107,9 @@ impl AlertRuntime {
     }
 }
 
-struct RuleLite {
+/// 单条告警规则的精简运行态。常驻规则缓存(见 [`reload_rules`]),故需 `pub(crate)` 以便
+/// [`crate::state`] 在 `Arc<Vec<RuleLite>>` 里命名它;字段仅本模块访问。
+pub(crate) struct RuleLite {
     id: i64,
     name: String,
     metric: String,
@@ -116,6 +118,8 @@ struct RuleLite {
     duration_secs: i64,
     severity: String,
     roc_window_secs: i64,
+    /// 归属节点:None=全局规则(对所有节点生效),Some(id)=仅该节点。
+    node_id: Option<i64>,
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -148,23 +152,24 @@ fn metric_value(name: &str, m: &Metrics, disk_total: i64, disk_used: i64) -> Opt
     }
 }
 
-async fn load_rules(st: &AppState, node_id: i64, offline: bool) -> Vec<RuleLite> {
-    // 适用规则:全局(node_id IS NULL)或指定本节点;按 metric 是否 offline 分流
+/// 重新载入告警规则缓存(启用中的**全部**规则,含 node_id 归属)。
+///
+/// 规则极少变更,却要在每条上报(on_metrics)与每次离线巡检(patrol)时逐条匹配。此前每次
+/// 都查库:N 个节点每 interval 各一次(P1-5),巡检还每节点一次(P1-4,N+1)。改为常驻内存 +
+/// 增删改后由对应 handler 显式 reload。启动时须调用一次填充缓存。
+pub(crate) async fn reload_rules(st: &AppState) {
     let rows = sqlx::query!(
         r#"SELECT id as "id!", name as "name!", metric as "metric!",
                   comparator as "comparator!", threshold as "threshold!: f64",
                   duration_secs as "duration_secs!", severity as "severity!",
-                  roc_window_secs as "roc_window_secs!"
-           FROM alert_rules
-           WHERE enabled = 1 AND (node_id IS NULL OR node_id = ?1)
-             AND ((?2 = 1 AND metric = 'offline') OR (?2 = 0 AND metric != 'offline'))"#,
-        node_id,
-        offline
+                  roc_window_secs as "roc_window_secs!", node_id as "node_id?: i64"
+           FROM alert_rules WHERE enabled = 1"#
     )
     .fetch_all(&st.db)
     .await
     .unwrap_or_default();
-    rows.into_iter()
+    let rules: Vec<RuleLite> = rows
+        .into_iter()
         .map(|r| RuleLite {
             id: r.id,
             name: r.name,
@@ -174,8 +179,25 @@ async fn load_rules(st: &AppState, node_id: i64, offline: bool) -> Vec<RuleLite>
             duration_secs: r.duration_secs,
             severity: r.severity,
             roc_window_secs: r.roc_window_secs,
+            node_id: r.node_id,
         })
-        .collect()
+        .collect();
+    if let Ok(mut w) = st.rule_cache.write() {
+        *w = std::sync::Arc::new(rules);
+    }
+}
+
+/// 取规则缓存快照(克隆 Arc,不在持锁期间做任何 await)。
+fn rules_snapshot(st: &AppState) -> std::sync::Arc<Vec<RuleLite>> {
+    st.rule_cache
+        .read()
+        .map(|g| std::sync::Arc::clone(&g))
+        .unwrap_or_default()
+}
+
+/// 该规则是否作用于给定节点(全局规则对所有节点生效)。
+fn rule_applies(rule: &RuleLite, node_id: i64) -> bool {
+    rule.node_id.is_none() || rule.node_id == Some(node_id)
 }
 
 /// 取节点在 `at_or_before` 时刻(含)之前最近一条历史指标,重算出 `metric` 的值
@@ -218,7 +240,11 @@ async fn past_core_value(
 /// 指标上报路径调用:评估该节点全部非离线规则。
 pub async fn on_metrics(st: &AppState, node_id: i64, m: &Metrics, disk_total: i64, disk_used: i64) {
     let now = unix_now();
-    for rule in load_rules(st, node_id, false).await {
+    let rules = rules_snapshot(st);
+    for rule in rules
+        .iter()
+        .filter(|r| r.metric != "offline" && rule_applies(r, node_id))
+    {
         let Some(val) = metric_value(&rule.metric, m, disk_total, disk_used) else {
             continue;
         };
@@ -246,7 +272,7 @@ pub async fn on_metrics(st: &AppState, node_id: i64, m: &Metrics, disk_total: i6
             };
             (breaching, val)
         };
-        transition(st, &rule, node_id, breaching, report_val, rule.duration_secs, now).await;
+        transition(st, rule, node_id, breaching, report_val, rule.duration_secs, now).await;
     }
 }
 
@@ -265,15 +291,20 @@ pub async fn patrol(st: AppState) {
         .await
         .unwrap_or_default();
 
+        // 一次性取规则缓存快照,offline 规则在内存里按节点过滤,替代此前每节点一次查库(P1-4)。
+        let rules = rules_snapshot(&st);
         for node in &nodes {
-            for rule in load_rules(&st, node.id, true).await {
+            for rule in rules
+                .iter()
+                .filter(|r| r.metric == "offline" && rule_applies(r, node.id))
+            {
                 // grace = duration_secs(默认视为 60s 下限,避免抖动误报)
                 let grace = rule.duration_secs.max(30);
                 let offline_secs = node.last_seen.map_or(i64::MAX, |ls| now.saturating_sub(ls));
                 let breaching = offline_secs > grace;
                 // 离线已含 grace,消抖 debounce 传 0
                 let val = offline_secs.min(i64::from(u32::MAX)) as f64;
-                transition(&st, &rule, node.id, breaching, val, 0, now).await;
+                transition(&st, rule, node.id, breaching, val, 0, now).await;
             }
         }
         renotify_sweep(&st).await;
@@ -725,6 +756,7 @@ mod tests {
             duration_secs: 0,
             severity: "warning".into(),
             roc_window_secs: 300,
+            node_id: None,
         };
         let msg = format_message(&rule, 42.5, true);
         assert!(msg.contains("变化") && msg.contains("+42.5"));

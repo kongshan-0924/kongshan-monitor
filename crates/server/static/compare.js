@@ -36,11 +36,13 @@ async function redraw() {
     const n = NODES.find((x) => x.id === id);
     return { label: (n ? n.name : "#" + id), colorVar: COLORS[i % COLORS.length] };
   });
-  // 重新构造图(series 数量变化)
+  // 重新构造图(series 数量变化):先销毁旧图,释放其 ResizeObserver / 主题监听 / 全局引用,
+  // 否则每次勾选或切换时间范围都会泄漏一份(F2)。destroy() 已清理旧 canvas/tip/legend。
+  if (cpuChart) { cpuChart.destroy(); cpuChart = null; }
+  if (memChart) { memChart.destroy(); memChart = null; }
   $("#cpuChart").replaceChildren();
   $("#memChart").replaceChildren();
-  const legendOld = document.querySelectorAll(".chart-legend");
-  legendOld.forEach((n) => n.remove());
+  document.querySelectorAll(".chart-legend").forEach((n) => n.remove());
   cpuChart = opChart($("#cpuChart"), { series, yFmt: (v) => v.toFixed(0) + "%", yMax: 100 });
   memChart = opChart($("#memChart"), { series, yFmt: (v) => v.toFixed(0) + "%", yMax: 100 });
   if (!ids.length) { cpuChart.setData([], []); memChart.setData([], []); return; }

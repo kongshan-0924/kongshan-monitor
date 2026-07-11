@@ -229,6 +229,7 @@ pub async fn create_rule(
     )
     .execute(&st.db)
     .await?;
+    crate::alerts::reload_rules(&st).await; // 刷新规则缓存(P1-5)
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
     audit::log(&st.db, &user.username, &ip.to_string(), "alert_rule_create", &name).await;
     Ok(Json(json!({ "id": r.last_insert_rowid() })))
@@ -255,6 +256,7 @@ pub async fn toggle_rule(
     if enabled == Some(0) {
         crate::alerts::resolve_rule_events(&st, id).await;
     }
+    crate::alerts::reload_rules(&st).await; // 启用/停用后刷新规则缓存(P1-5)
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
     audit::log(&st.db, &user.username, &ip.to_string(), "alert_rule_toggle", &format!("#{id}")).await;
     Ok(Json(json!({ "ok": true })))
@@ -273,6 +275,7 @@ pub async fn delete_rule(
         return Err(AppError::NotFound);
     }
     crate::alerts::forget_rule(&st, id); // 事件随级联删除,清运行态
+    crate::alerts::reload_rules(&st).await; // 删除后刷新规则缓存(P1-5)
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
     audit::log(&st.db, &user.username, &ip.to_string(), "alert_rule_delete", &format!("#{id}")).await;
     Ok(Json(json!({ "ok": true })))

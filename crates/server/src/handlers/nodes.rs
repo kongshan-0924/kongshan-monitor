@@ -71,12 +71,12 @@ fn render_install_command(st: &AppState, key: &str) -> String {
             "sh -c 'set -eu; U=\"{url}\"; F=\"{fpr}\"; D=\"$(mktemp -d)\"; cd \"$D\"; \
              curl -fsSk \"$U/ca.pem\" -o ca.pem; echo \"$F  ca.pem\" | sha256sum -c - >/dev/null; \
              curl -fsS --cacert ca.pem \"$U/install.sh\" -o install.sh; \
-             sh install.sh --server \"$U\" --ca \"$D/ca.pem\" --key \"{key}\"'"
+             OP_KEY=\"{key}\" sh install.sh --server \"$U\" --ca \"$D/ca.pem\"'"
         ),
         _ => format!(
             "sh -c 'set -eu; U=\"{url}\"; D=\"$(mktemp -d)\"; cd \"$D\"; \
              curl -fsS \"$U/install.sh\" -o install.sh; \
-             sh install.sh --server \"$U\" --key \"{key}\"'"
+             OP_KEY=\"{key}\" sh install.sh --server \"$U\"'"
         ),
     }
 }
@@ -588,6 +588,10 @@ pub async fn batch(
                     affected += 1;
                 }
             }
+            if affected > 0 {
+                // 删节点会经外键级联删掉其节点级告警规则(隐式变更 alert_rules),刷新规则缓存
+                crate::alerts::reload_rules(&st).await;
+            }
         }
         "revoke" => {
             for id in &req.ids {
@@ -613,18 +617,31 @@ pub async fn batch(
         }
         "upgrade" => {
             // 触发在线 agent 远程自升级(规范 6.4 红线破例,见 crates/common 模块文档与
-            // SECURITY_AUDIT 附录 F)。仅对当前有活跃 WS 连接的节点生效;离线节点原样跳过,
-            // 不排队、不重试,管理员可从响应的 offline 列表得知需另行手动升级。
-            let mut offline = Vec::new();
+            // SECURITY_AUDIT 附录 F)。当前有活跃连接的节点立即下发;触发瞬间恰无连接的
+            // (常因升级/重连造成的短暂断开)记入补发窗口:节点在 UPGRADE_RESEND_SECS 秒内
+            // 重连即自动补发一次,不再直接判定"离线无法下发"。窗口过后自动失效,不做持久排队。
+            let now = crate::util::unix_now();
+            let deadline = now.saturating_add(crate::state::UPGRADE_RESEND_SECS);
+            let mut queued = Vec::new();
             for id in &req.ids {
+                // 读 sender 与写 pending 必须在同一临界区(锁序:先 upgrade_tx 后 pending_upgrade),
+                // 与 conn_loop 的"插 sender + drain pending"互斥,消除补发窗口的丢发/双发竞态。
                 let sent = {
                     let m = st.upgrade_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    m.get(id).is_some_and(|tx| tx.send(()).is_ok())
+                    if m.get(id).is_some_and(|tx| tx.send(()).is_ok()) {
+                        true
+                    } else {
+                        let mut p =
+                            st.pending_upgrade.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        p.retain(|_, exp| *exp > now); // 顺手清理过期项,防泄漏
+                        p.insert(*id, deadline);
+                        false
+                    }
                 };
                 if sent {
                     affected += 1;
                 } else {
-                    offline.push(*id);
+                    queued.push(*id);
                 }
             }
             audit::log(
@@ -632,10 +649,13 @@ pub async fn batch(
                 &user.username,
                 &ip,
                 "node_batch",
-                &format!("upgrade x{} affected={}", req.ids.len(), affected),
+                &format!("upgrade x{} affected={} queued={}", req.ids.len(), affected, queued.len()),
             )
             .await;
-            return Ok(Json(json!({ "ok": true, "affected": affected, "offline": offline })));
+            // 兼容旧前端字段名:queued 同时以 offline 键回传(语义已从"离线"变为"待重连补发")。
+            return Ok(Json(
+                json!({ "ok": true, "affected": affected, "queued": queued, "offline": [] }),
+            ));
         }
         _ => return Err(AppError::bad("不支持的批量操作")),
     }
@@ -694,6 +714,7 @@ pub async fn delete(
         return Err(AppError::NotFound);
     }
     crate::alerts::forget_node(&st, id); // 告警事件/规则随级联删除,清运行态
+    crate::alerts::reload_rules(&st).await; // 级联删了节点级规则,刷新规则缓存(避免缓存陈旧)
     let ip = client_ip(peer, &headers, &st.cfg.trusted_proxy_ips());
     audit::log(&st.db, &user.username, &ip.to_string(), "node_delete", &format!("#{id}")).await;
     Ok(Json(json!({ "ok": true })))

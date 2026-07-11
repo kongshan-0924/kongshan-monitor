@@ -43,12 +43,22 @@ pub struct Inner {
     pub artifacts: Vec<Artifact>,
     /// 告警运行态消抖状态(内存)。
     pub alert_rt: crate::alerts::AlertRuntime,
+    /// 告警规则缓存(启用中的全部规则,含 node_id 归属)。规则极少变更却每条上报都要匹配,
+    /// 故常驻内存;增删改后由 handlers 调 [`crate::alerts::reload_rules`] 刷新(P1-4/P1-5)。
+    pub rule_cache: RwLock<Arc<Vec<crate::alerts::RuleLite>>>,
     /// 通知去重节流:(channel_id, text_hash) -> 上次发送时刻。
     pub notify_throttle: std::sync::Mutex<std::collections::HashMap<(i64, u64), i64>>,
     /// 在线 agent 的升级触发通道(node_id -> sender);仅用于按需下发零参数的
     /// [`outpost_common::ServerToAgent::Upgrade`],不承载任何可变内容。
     pub upgrade_tx: Mutex<HashMap<i64, mpsc::UnboundedSender<()>>>,
+    /// 升级补发窗口(node_id -> 截止 unix 秒)。向触发瞬间恰无活跃连接的节点下发升级时,
+    /// 记入本表;该节点在窗口内(见 `UPGRADE_RESEND_SECS`)重连即自动补发一次,消除
+    /// "面板显示在线、点升级却报离线"的竞态假象。纯内存 + 短 TTL,不做持久排队。
+    pub pending_upgrade: Mutex<HashMap<i64, i64>>,
 }
+
+/// 升级补发窗口时长(秒):节点在此窗口内重连将自动补发一次升级触发。
+pub const UPGRADE_RESEND_SECS: i64 = 30;
 
 pub type AppState = Arc<Inner>;
 

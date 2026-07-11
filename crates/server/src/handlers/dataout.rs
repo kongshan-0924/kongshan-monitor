@@ -144,6 +144,13 @@ fn default_fmt() -> String {
     "csv".to_string()
 }
 
+/// 单次导出的硬上限行数:防超长时间跨度 / 极小上报间隔把整段历史一次性读进内存导致 OOM
+/// (P1-7)。命中上限时返回**最近** N 条并置响应头 `x-outpost-truncated: 1`,不静默截断。
+/// 约 50 万行 CSV 峰值内存 ~80MB,覆盖默认 30 天保留;更长保留/更密采样则只导出最近段。
+const MAX_EXPORT_ROWS: i64 = 500_000;
+/// 实际查询多取一行,用于精确判定是否发生截断(见 export)。
+const MAX_EXPORT_ROWS_PROBE: i64 = MAX_EXPORT_ROWS + 1;
+
 /// GET /api/v1/nodes/{id}/export?secs=&format=csv|json — 历史指标导出。
 pub async fn export(
     State(st): State<AppState>,
@@ -153,18 +160,28 @@ pub async fn export(
 ) -> Result<Response, AppError> {
     let secs = q.secs.clamp(300, 90 * 86400);
     let since = unix_now().saturating_sub(secs);
-    let rows = sqlx::query!(
+    // 取最近 MAX_EXPORT_ROWS 条(DESC + LIMIT 封顶内存),随后在内存里反转为时间升序输出。
+    // 多取一行(LIMIT N+1)以精确区分"恰好等于上限"与"确被截断",避免 x-outpost-truncated 误报。
+    let mut rows = sqlx::query!(
         r#"SELECT ts as "ts!", cpu_pct as "cpu_pct!: f64", load1 as "load1!: f64",
                   mem_used as "mem_used!: i64", mem_total as "mem_total!: i64",
                   disk_used as "disk_used!: i64", disk_total as "disk_total!: i64",
                   net_rx_bps as "net_rx_bps!: i64", net_tx_bps as "net_tx_bps!: i64",
                   procs as "procs!: i64"
-           FROM metrics WHERE node_id = ?1 AND ts >= ?2 ORDER BY ts"#,
+           FROM metrics WHERE node_id = ?1 AND ts >= ?2 ORDER BY ts DESC LIMIT ?3"#,
         id,
-        since
+        since,
+        MAX_EXPORT_ROWS_PROBE
     )
     .fetch_all(&st.db)
     .await?;
+    let truncated = i64::try_from(rows.len()).unwrap_or(i64::MAX) > MAX_EXPORT_ROWS;
+    if truncated {
+        // DESC 排序下保留最新 MAX_EXPORT_ROWS 条,丢掉多取的那条(最旧)。
+        rows.truncate(usize::try_from(MAX_EXPORT_ROWS).unwrap_or(rows.len()));
+    }
+    rows.reverse(); // DESC → 时间升序
+    let trunc_hdr = if truncated { "1" } else { "0" };
     if rows.is_empty() {
         // 节点不存在或无数据:统一 404,不区分(避免探测)
         let exists = sqlx::query_scalar!(r#"SELECT COUNT(*) as "c!: i64" FROM nodes WHERE id = ?1"#, id)
@@ -176,28 +193,29 @@ pub async fn export(
     }
 
     if q.format == "json" {
-        let items: Vec<Value> = rows
-            .iter()
-            .map(|r| {
-                json!({
-                    "ts": r.ts, "cpu_pct": r.cpu_pct, "load1": r.load1,
-                    "mem_used": r.mem_used, "mem_total": r.mem_total,
-                    "disk_used": r.disk_used, "disk_total": r.disk_total,
-                    "net_rx_bps": r.net_rx_bps, "net_tx_bps": r.net_tx_bps, "procs": r.procs,
-                })
+        let mut items: Vec<Value> = Vec::with_capacity(rows.len());
+        items.extend(rows.iter().map(|r| {
+            json!({
+                "ts": r.ts, "cpu_pct": r.cpu_pct, "load1": r.load1,
+                "mem_used": r.mem_used, "mem_total": r.mem_total,
+                "disk_used": r.disk_used, "disk_total": r.disk_total,
+                "net_rx_bps": r.net_rx_bps, "net_tx_bps": r.net_tx_bps, "procs": r.procs,
             })
-            .collect();
+        }));
         Ok((
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, "application/json; charset=utf-8".to_string()),
                 (header::CONTENT_DISPOSITION, format!("attachment; filename=\"node{id}.json\"")),
+                (header::HeaderName::from_static("x-outpost-truncated"), trunc_hdr.to_string()),
             ],
             serde_json::to_string(&items).unwrap_or_else(|_| "[]".into()),
         )
             .into_response())
     } else {
-        let mut csv = String::from(
+        // 预留容量:表头 + 每行约 80 字节,避免边写边扩容重分配。
+        let mut csv = String::with_capacity(80 + rows.len().saturating_mul(80));
+        csv.push_str(
             "ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,procs\n",
         );
         // 全部为数值字段,无注入面;仍避免任何用户字符串进入 CSV
@@ -214,6 +232,7 @@ pub async fn export(
             [
                 (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
                 (header::CONTENT_DISPOSITION, format!("attachment; filename=\"node{id}.csv\"")),
+                (header::HeaderName::from_static("x-outpost-truncated"), trunc_hdr.to_string()),
             ],
             csv,
         )

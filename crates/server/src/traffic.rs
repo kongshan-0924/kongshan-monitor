@@ -14,12 +14,6 @@ pub fn valid_reset_day(d: i64) -> bool {
     (1..=28).contains(&d)
 }
 
-/// 单次报告的最大计入时长(秒):断线重连后避免用"离线期间的全部秒数"乘以瞬时速率,
-/// 造成流量暴涨的假象;超过则按此上限计入(与"在线判定"用的 interval*3 同量级)。
-fn capped_elapsed(elapsed: i64, interval_secs: i64) -> i64 {
-    elapsed.clamp(0, interval_secs.saturating_mul(3).max(30))
-}
-
 /// Unix 天数(自 1970-01-01 起,可为负)→ (年, 月[1..=12], 日[1..=31])。
 #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -64,35 +58,40 @@ pub fn current_period_start(now: i64, reset_day: i64) -> i64 {
 }
 
 /// 按本次上报的速率估算这段时间的流量,累加进节点的周期计数器。静默失败(不影响主流程)。
+///
+/// 用**单条原子 UPDATE**完成"读上次时刻→算时长→累加→写新时刻":elapsed 直接以行内当前
+/// `traffic_last_ts` 计算,并以 `?now > traffic_last_ts` 作乐观并发保护。此前是先 SELECT
+/// 再 UPDATE,同一节点两条上报并发(各自 spawn 的任务)会读到同一 last_ts 而重复累加(C8);
+/// 现在写操作串行化后,后者读到的是已提交的新 last_ts,同秒重复上报直接不满足 WHERE、不累加。
+/// 报告间隔改从内存 watch 读取,免去每条上报一次 settings 查库(P1-6,热路径去库化)。
 pub async fn accumulate(st: &AppState, node_id: i64, now: i64, rx_bps: i64, tx_bps: i64) {
-    let interval_secs = crate::db::setting_i64(&st.db, "report_interval_secs", 5, 1, 3600).await;
-    let Ok(Some(row)) = sqlx::query!(
-        r#"SELECT traffic_last_ts as "last_ts!" FROM nodes WHERE id = ?1"#,
-        node_id
-    )
-    .fetch_optional(&st.db)
-    .await
-    else {
-        return;
-    };
-    let elapsed = if row.last_ts > 0 { capped_elapsed(now - row.last_ts, interval_secs) } else { 0 };
-    if elapsed <= 0 {
-        let _ = sqlx::query!("UPDATE nodes SET traffic_last_ts = ?1 WHERE id = ?2", now, node_id)
-            .execute(&st.db)
-            .await;
-        return;
-    }
-    let rx_add = rx_bps.max(0).saturating_mul(elapsed);
-    let tx_add = tx_bps.max(0).saturating_mul(elapsed);
+    let interval_secs = i64::from(*st.interval_tx.borrow());
+    // 单次计入时长上限:断线重连后不用"离线全部秒数"乘瞬时速率造成流量暴涨;上限取
+    // interval*3(与"在线判定"同量级),至少 30s。SQL 里以 MIN(elapsed, cap) 落地。
+    let cap = interval_secs.saturating_mul(3).max(30);
+    // 把单条上报速率夹到安全上界:被攻陷的 agent(威胁模型 6.2.5)可上报接近 i64 上限的速率,
+    // rx*elapsed 越过 i64::MAX 后 SQLite 会把结果转成 REAL,污染 INTEGER 计数列,之后以 i64
+    // 读回将解码失败(节点列表/详情 500)。2^40 B/s(~8.8Tbps)远高于任何真实链路,合法数据不受影响。
+    const MAX_RATE_BPS: i64 = 1 << 40;
+    // 累计总量同样封顶(2^60 B ≈ 1.15 EB,远超任何真实月流量),防恶意上报把总量累加过 i64::MAX。
+    const MAX_TRAFFIC_TOTAL: i64 = 1 << 60;
+    let rx = rx_bps.clamp(0, MAX_RATE_BPS);
+    let tx = tx_bps.clamp(0, MAX_RATE_BPS);
+    // last_ts=0(首次上报)只登记时刻、不累加,避免把"从未上报到现在"的时长乘进流量。
+    // 各中间量均被夹在安全范围:rx≤2^40、elapsed≤cap<2^14 → 乘积≤2^54;总量+乘积<2^61<i64::MAX,
+    // 外层 MIN 再把总量封顶到 2^60,任一步都不会溢出。
     let _ = sqlx::query!(
-        "UPDATE nodes SET traffic_rx_total = traffic_rx_total + ?1,
-                           traffic_tx_total = traffic_tx_total + ?2,
-                           traffic_last_ts = ?3
-         WHERE id = ?4",
-        rx_add,
-        tx_add,
+        "UPDATE nodes SET
+            traffic_rx_total = MIN(traffic_rx_total + ?1 * (CASE WHEN traffic_last_ts > 0 THEN MIN(?2 - traffic_last_ts, ?3) ELSE 0 END), ?6),
+            traffic_tx_total = MIN(traffic_tx_total + ?4 * (CASE WHEN traffic_last_ts > 0 THEN MIN(?2 - traffic_last_ts, ?3) ELSE 0 END), ?6),
+            traffic_last_ts = ?2
+         WHERE id = ?5 AND ?2 > traffic_last_ts",
+        rx,
         now,
-        node_id
+        cap,
+        tx,
+        node_id,
+        MAX_TRAFFIC_TOTAL
     )
     .execute(&st.db)
     .await;
@@ -110,7 +109,18 @@ pub async fn sweep_resets(st: &AppState) {
     .unwrap_or_default();
     for r in rows {
         let expected = current_period_start(now, r.reset_day);
-        if expected != r.period_start {
+        if r.period_start == 0 {
+            // 刚开启按月清零而尚未登记起点(period_start 为 0 哨兵):仅登记本期起点,
+            // 不清零已累计流量。否则首次巡检会因 expected≠0 立即把历史流量清空(C12)。
+            let _ = sqlx::query!(
+                "UPDATE nodes SET traffic_period_start = ?1 WHERE id = ?2 AND traffic_period_start = 0",
+                expected,
+                r.id
+            )
+            .execute(&st.db)
+            .await;
+        } else if expected != r.period_start {
+            // 已跨过统计周期边界:清零并登记新起点。
             let _ = sqlx::query!(
                 "UPDATE nodes SET traffic_rx_total = 0, traffic_tx_total = 0, traffic_period_start = ?1
                  WHERE id = ?2",
@@ -178,10 +188,4 @@ mod tests {
         assert!(!valid_reset_day(0) && !valid_reset_day(29) && !valid_reset_day(31));
     }
 
-    #[test]
-    fn elapsed_capping_avoids_reconnect_spike() {
-        assert_eq!(capped_elapsed(5, 5), 5);
-        assert_eq!(capped_elapsed(100_000, 5), 30); // 断线很久重连:按上限(至少 30s)计入,不放大
-        assert_eq!(capped_elapsed(-3, 5), 0); // 时钟异常/重复上报,不倒扣
-    }
 }

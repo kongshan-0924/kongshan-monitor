@@ -127,9 +127,27 @@ async fn conn_loop(st: AppState, mut sock: WebSocket, node_id: i64) {
     // 登记升级触发通道:后续「服务器管理」批量升级按 node_id 找到本连接下发
     // 零参数的 ServerToAgent::Upgrade(见 crates/common 模块文档的红线破例说明)。
     let (upgrade_tx, mut upgrade_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    {
+
+    // 登记 sender 与 drain 补发窗口必须在**同一临界区**内完成,且与 batch 侧的"读 sender/写
+    // pending"以相同锁序(先 upgrade_tx 后 pending_upgrade)互斥。否则两把锁分开加会出现:
+    // batch 读 sender(不在)→ 本处插 sender → 本处 drain(空)→ batch 写 pending,
+    // 终态 sender 活着却从未下发、pending 又要等下次重连——升级丢失且回包却显示"已排入"(竞态)。
+    let resend_upgrade = {
         let mut m = st.upgrade_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         m.insert(node_id, upgrade_tx);
+        let now = unix_now();
+        let mut p = st.pending_upgrade.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        matches!(p.remove(&node_id), Some(exp) if exp > now)
+    };
+    if resend_upgrade {
+        tracing::warn!(node_id, "重连补发管理员触发的远程升级(补发窗口内)");
+        if let Ok(s) = serde_json::to_string(&ServerToAgent::Upgrade) {
+            if sock.send(Message::Text(s.into())).await.is_err() {
+                let mut m = st.upgrade_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                m.remove(&node_id);
+                return;
+            }
+        }
     }
 
     let mut ping = tokio::time::interval(Duration::from_secs(30));
@@ -320,31 +338,35 @@ async fn handle_msg(st: &AppState, node_id: i64, m: AgentToServer) -> Result<(),
                 return Ok(());
             }
 
-            // 实时推送给 UI(数据已清洗;前端仍只用 textContent 渲染)
-            let live = json!({
-                "type": "metrics",
-                "node_id": node_id,
-                "ts": now,
-                "latest": {
-                    "ts": now, "cpu_pct": metrics.cpu_pct,
-                    "load1": metrics.load1, "load5": metrics.load5, "load15": metrics.load15,
-                    "mem_total": metrics.mem_total, "mem_used": metrics.mem_used,
-                    "swap_total": metrics.swap_total, "swap_used": metrics.swap_used,
-                    "disk_total": disk_total, "disk_used": disk_used,
-                    "net_rx_bps": rx, "net_tx_bps": tx,
-                    "disk_read_bps": dr, "disk_write_bps": dw,
-                    "uptime_secs": metrics.uptime_secs, "procs": metrics.procs,
-                    "cpu_temp_c": metrics.cpu_temp_c, "tcp_conns": metrics.tcp_conns,
-                    "disk_read_iops": metrics.disk_read_iops, "disk_write_iops": metrics.disk_write_iops,
-                }
-            });
-            let _ = st.live_tx.send(live.to_string());
+            // 实时推送给 UI(数据已清洗;前端仍只用 textContent 渲染)。无 UI 订阅者时直接
+            // 跳过 JSON 构造与序列化,省去每条上报的无谓开销(P2-9)。
+            if st.live_tx.receiver_count() > 0 {
+                let live = json!({
+                    "type": "metrics",
+                    "node_id": node_id,
+                    "ts": now,
+                    "latest": {
+                        "ts": now, "cpu_pct": metrics.cpu_pct,
+                        "load1": metrics.load1, "load5": metrics.load5, "load15": metrics.load15,
+                        "mem_total": metrics.mem_total, "mem_used": metrics.mem_used,
+                        "swap_total": metrics.swap_total, "swap_used": metrics.swap_used,
+                        "disk_total": disk_total, "disk_used": disk_used,
+                        "net_rx_bps": rx, "net_tx_bps": tx,
+                        "disk_read_bps": dr, "disk_write_bps": dw,
+                        "uptime_secs": metrics.uptime_secs, "procs": metrics.procs,
+                        "cpu_temp_c": metrics.cpu_temp_c, "tcp_conns": metrics.tcp_conns,
+                        "disk_read_iops": metrics.disk_read_iops, "disk_write_iops": metrics.disk_write_iops,
+                    }
+                });
+                let _ = st.live_tx.send(live.to_string());
+            }
 
-            // 告警评估 + 流量累计(在 clone 出的句柄上跑,不阻断上报循环;数据已清洗)
+            // 告警评估 + 流量累计:spawn 到独立任务,不阻断上报接收循环(数据已清洗)。
+            // metrics 之后不再被使用,直接 move 进任务,免去每条上报克隆整个 Metrics
+            //(含 disks/nets/procs 等多个 Vec)的开销(P2-8)。
             let st2 = st.clone();
-            let m2 = metrics.clone();
             tokio::spawn(async move {
-                crate::alerts::on_metrics(&st2, node_id, &m2, disk_total, disk_used).await;
+                crate::alerts::on_metrics(&st2, node_id, &metrics, disk_total, disk_used).await;
                 crate::traffic::accumulate(&st2, node_id, now, rx, tx).await;
             });
             Ok(())

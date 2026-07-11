@@ -229,7 +229,7 @@ function renderTables(detail) {
       stTd.appendChild(el("span", "pill " + (p.running ? "on" : "off"), p.running ? "运行中" : "未运行"));
       tr.appendChild(stTd);
       tr.appendChild(el("td", "nowrap", String(p.count)));
-      tr.appendChild(el("td", "nowrap", p.cpu_pct.toFixed(1) + "%"));
+      tr.appendChild(el("td", "nowrap", (p.cpu_pct || 0).toFixed(1) + "%"));
       tr.appendChild(el("td", "nowrap", fmtBytes(p.rss)));
       pt.appendChild(tr);
     }
@@ -373,14 +373,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#closeCmdDlg").addEventListener("click", () => $("#cmdDlg").close());
 
-  /* 远程升级(单节点):仅当前节点在活跃 WS 连接时才会触发,离线则提示需另行手动升级。
+  /* 远程升级(单节点):在线立即下发;若触发瞬间正在重连,进入 30 秒补发窗口,重连后自动补发。
      复用批量端点(action:"upgrade"),不新增接口。 */
   $("#upgradeBtn").addEventListener("click", async () => {
-    if (!confirm("触发「" + (nodeInfo ? nodeInfo.name : NODE_ID) + "」远程升级 agent?仅当前在线才会生效。")) return;
+    if (!confirm("触发「" + (nodeInfo ? nodeInfo.name : NODE_ID) + "」远程升级 agent?")) return;
     try {
       const r = await api("POST", "/api/nodes/batch", { action: "upgrade", ids: [NODE_ID] });
       if (r.affected > 0) alert("已触发升级,实际是否成功需稍后核对 Agent 版本。");
-      else alert("该节点当前离线,未收到触发,需另行手动升级。");
+      else alert("节点正在重连,升级请求已排入 30 秒补发窗口,重连后自动补发;如仍未生效可稍后重试。");
     } catch (e) { alert(e.error || "失败"); }
   });
 
