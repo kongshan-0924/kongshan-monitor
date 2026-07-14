@@ -26,6 +26,25 @@ pub const SEVERITIES: &[&str] = &["info", "warning", "critical"];
 const NOTIFY_DEDUP_SECS: i64 = 60;
 
 const OFFLINE_PATROL_SECS: u64 = 30;
+/// 离线首次确认时长(秒):节点静默超过"容忍时长"后,还须在该确认期内持续离线才告警,
+/// 过滤偶发延迟/丢包造成的瞬时"离线"(至少再跨一个巡检周期确认)。
+const OFFLINE_CONFIRM_SECS: i64 = 30;
+/// 离线抗抖动窗口(秒):节点从离线恢复后的这段时间内视为"疑似链路抖动"。
+const FLAP_WINDOW_SECS: i64 = 600;
+/// 抗抖期内再次离线须持续满这么久才允许再次告警,避免延迟/丢包反复触发离线/恢复刷屏。
+const FLAP_REFIRE_SECS: i64 = 300;
+
+/// 计算本次离线 breach 距离"允许告警"还需持续多久:普通情况用调用方给的确认时长;
+/// 若节点刚从离线恢复不久(疑似抖动),抬高到 [`FLAP_REFIRE_SECS`],让偶发再离线不再刷屏。
+/// 首次离线(`recovered_at` 为空)不受影响,保证真实宕机仍能及时告警。
+fn offline_fire_debounce(metric: &str, base: i64, recovered_at: Option<i64>, now: i64) -> i64 {
+    if metric == "offline" && recovered_at.is_some_and(|r| now.saturating_sub(r) < FLAP_WINDOW_SECS)
+    {
+        base.max(FLAP_REFIRE_SECS)
+    } else {
+        base
+    }
+}
 
 #[must_use]
 pub fn valid_metric(m: &str) -> bool {
@@ -92,6 +111,8 @@ struct Breach {
     since: Option<i64>,
     firing: bool,
     event_id: Option<i64>,
+    /// 上次从离线**恢复**的时刻(仅离线规则维护),用于抗抖动:刚恢复不久又离线要求更久确认。
+    recovered_at: Option<i64>,
 }
 
 /// 每 (rule_id, node_id) 的运行态消抖状态。
@@ -298,17 +319,18 @@ pub async fn patrol(st: AppState) {
                 .iter()
                 .filter(|r| r.metric == "offline" && rule_applies(r, node.id))
             {
-                // grace = duration_secs(默认视为 60s 下限,避免抖动误报)
-                let grace = rule.duration_secs.max(30);
+                // grace = 容忍时长(下限 60s:不足 1 分钟的静默几乎都是延迟/丢包抖动,不算离线)
+                let grace = rule.duration_secs.max(60);
                 let offline_secs = node.last_seen.map_or(i64::MAX, |ls| now.saturating_sub(ls));
                 let breaching = offline_secs > grace;
-                // 离线已含 grace,消抖 debounce 传 0
                 let val = offline_secs.min(i64::from(u32::MAX)) as f64;
-                transition(&st, rule, node.id, breaching, val, 0, now).await;
+                // 越过 grace 后仍要求持续 OFFLINE_CONFIRM_SECS(跨一个巡检周期确认)才告警,
+                // 叠加 transition 内的抗抖动,滤掉偶发瞬时离线。
+                transition(&st, rule, node.id, breaching, val, OFFLINE_CONFIRM_SECS, now).await;
             }
         }
         renotify_sweep(&st).await;
-        prune_runtime(&st);
+        prune_runtime(&st, now);
     }
 }
 
@@ -347,9 +369,14 @@ async fn renotify_sweep(st: &AppState) {
 }
 
 /// 清理不再活跃的运行态键,防内存缓慢增长。
-fn prune_runtime(st: &AppState) {
+/// 保留:仍在告警、正在计时、或"刚恢复且仍在抗抖窗口内"的键(否则抗抖动状态会被过早清掉)。
+fn prune_runtime(st: &AppState, now: i64) {
     let mut map = st.alert_rt.lock();
-    map.retain(|_, b| b.firing || b.since.is_some());
+    map.retain(|_, b| {
+        b.firing
+            || b.since.is_some()
+            || b.recovered_at.is_some_and(|r| now.saturating_sub(r) < FLAP_WINDOW_SECS)
+    });
 }
 
 /// 单条 (规则 × 节点) 的状态转移。消抖 debounce 由调用方给定。
@@ -374,7 +401,9 @@ async fn transition(
                 b.since = Some(now);
             }
             let elapsed = now.saturating_sub(b.since.unwrap_or(now));
-            if !b.firing && elapsed >= debounce {
+            // 离线抗抖:刚从离线恢复不久又离线,要求持续更久才再次告警(见 offline_fire_debounce)。
+            let need = offline_fire_debounce(&rule.metric, debounce, b.recovered_at, now);
+            if !b.firing && elapsed >= need {
                 b.firing = true; // 乐观置位,防同键重复插入
                 do_fire = true;
             }
@@ -382,6 +411,9 @@ async fn transition(
             if b.firing {
                 resolve_event = b.event_id;
                 b.firing = false;
+                if rule.metric == "offline" {
+                    b.recovered_at = Some(now); // 记录恢复时刻,供抗抖判断
+                }
             }
             b.since = None;
             b.event_id = None;
@@ -799,5 +831,20 @@ mod tests {
         assert!(webhook_payload("https://hooks.slack.com/x", "hi").contains("\"text\""));
         // 注入字符经 serde 转义
         assert!(webhook_payload("https://x.com", "a\"b\n").contains("a\\\"b\\n"));
+    }
+
+    #[test]
+    fn offline_flap_hysteresis() {
+        let now = 10_000;
+        // 首次离线(从未恢复过):用基础确认时长,及时告警
+        assert_eq!(offline_fire_debounce("offline", 30, None, now), 30);
+        // 刚恢复不久(抗抖窗口内)又离线:抬高到抗抖再触发时长,滤掉刷屏
+        assert_eq!(offline_fire_debounce("offline", 30, Some(now - 60), now), FLAP_REFIRE_SECS);
+        // 恢复已久(超出抗抖窗口):回到基础确认时长
+        assert_eq!(offline_fire_debounce("offline", 30, Some(now - FLAP_WINDOW_SECS - 1), now), 30);
+        // 非离线规则:抗抖动不介入,原样返回基础消抖
+        assert_eq!(offline_fire_debounce("cpu_pct", 30, Some(now - 60), now), 30);
+        // 基础消抖已比抗抖阈值更大时,取更大者(不缩短用户设定)
+        assert_eq!(offline_fire_debounce("offline", 600, Some(now - 60), now), 600);
     }
 }

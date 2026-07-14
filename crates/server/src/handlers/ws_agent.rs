@@ -62,19 +62,14 @@ pub async fn upgrade(
         .on_upgrade(move |sock| conn_loop(st, sock, node_id)))
 }
 
-/// 从清洗后的指标构造 detail JSON 与主磁盘(优先 "/",否则容量最大挂载点)。
+/// 从清洗后的指标构造 detail JSON 与磁盘容量(本机所有磁盘的总和)。
+/// 求和无重复计数:agent 的 collect_disks 已按文件系统白名单过滤(不含 tmpfs/overlay)并
+/// 按设备去重(同一设备多挂载点只留一条),故各挂载点容量相加即整机磁盘总量。
 fn build_detail(m: &outpost_common::Metrics) -> (String, i64, i64) {
-    let primary = m
-        .disks
-        .iter()
-        .find(|d| d.mount == "/")
-        .or_else(|| m.disks.iter().max_by_key(|d| d.total));
-    let (dt, du) = primary.map_or((0i64, 0i64), |d| {
-        (
-            i64::try_from(d.total).unwrap_or(i64::MAX),
-            i64::try_from(d.used).unwrap_or(i64::MAX),
-        )
-    });
+    let sum_total = m.disks.iter().fold(0u64, |a, d| a.saturating_add(d.total));
+    let sum_used = m.disks.iter().fold(0u64, |a, d| a.saturating_add(d.used));
+    let dt = i64::try_from(sum_total).unwrap_or(i64::MAX);
+    let du = i64::try_from(sum_used).unwrap_or(i64::MAX);
     let detail = json!({
         "disks": m.disks.iter().map(|d| json!({
             "mount": d.mount, "fs": d.fs, "total": d.total, "used": d.used,

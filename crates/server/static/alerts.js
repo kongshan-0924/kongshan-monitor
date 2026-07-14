@@ -208,6 +208,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     const metric = $("#rMetric").value;
     const isRoc = $("#rComparator").value === "roc";
     $("#threshRow").classList.toggle("hidden", metric === "offline");
+    $("#offlineHint").classList.toggle("hidden", metric !== "offline");
+    // 离线规则给更宽容的默认容忍时长(适应云服务器抖动),仅在仍是通用默认值时替换,不覆盖用户改动
+    const dur = $("#rDuration");
+    if (metric === "offline" && (dur.value === "" || dur.value === "60")) dur.value = "120";
     $("#rocWindowRow").classList.toggle("hidden", !isRoc);
     $("#rThresholdLabel").firstChild.textContent = isRoc ? "变化幅度阈值 " : "阈值 ";
     for (const opt of $("#rMetric").options) {

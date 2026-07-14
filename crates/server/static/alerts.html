@@ -122,6 +122,9 @@
     <label>持续时间(秒,连续超限多久才告警;离线时为容忍时长;变化率条件通常填 0)
       <input id="rDuration" type="number" min="0" max="86400" value="60">
     </label>
+    <p id="offlineHint" class="hint subtle hidden">离线检测已内置抗抖动:越过容忍时长后还需持续约
+      30 秒确认才告警,且刚恢复过的节点会要求持续离线 5 分钟才再次告警——偶发延迟/丢包不会再刷屏。
+      云服务器建议容忍时长 ≥120 秒。</p>
     <label>严重度(决定推送到哪些渠道)
       <select id="rSeverity">
         <option value="info">信息 info</option>
