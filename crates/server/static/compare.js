@@ -64,8 +64,10 @@ async function redraw() {
   const ts = Array.from(tsSet).sort((a, b) => a - b);
   const cpuData = maps.map((m) => ts.map((t) => (m.cpu.has(t) ? m.cpu.get(t) : null)));
   const memData = maps.map((m) => ts.map((t) => (m.mem.has(t) ? m.mem.get(t) : null)));
-  cpuChart.setData(ts, cpuData);
-  memChart.setData(ts, memData);
+  // 全部节点同时缺数的窗口(如服务端停机)靠 gapStep 断线;单节点缺数已由 null 对齐处理
+  const step = (datas.find((x) => x && x.step) || {}).step || 0;
+  cpuChart.setData(ts, cpuData, null, step);
+  memChart.setData(ts, memData, null, step);
 }
 
 document.addEventListener("DOMContentLoaded", async () => {

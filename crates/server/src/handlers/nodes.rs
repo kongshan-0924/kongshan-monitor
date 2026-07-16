@@ -415,16 +415,24 @@ pub async fn history(
     // 目标 ~360 个点;步长向上取整到至少 1 秒
     let step = (secs / 360).max(1);
 
-    // 阈值:超过 2 天用小时聚合表
+    // 阈值:超过 2 天用小时聚合表。
+    // 每桶除均值外附带峰值(下标 9..14):AVG 聚合会把短促尖峰抹平(24h 视图一个桶
+    // ≈4 分钟,30 秒的 CPU 100% 只剩十几),前端据此画"峰值带",突发不再被平均掉。
     let points: Vec<Value> = if secs > 2 * 86400 {
         let bstep = step.max(3600); // 聚合表最细为小时
+        // 聚合表仅存 cpu_max 一列真峰值;其余取"小时均值中的最大者"——粒度≥数小时时仍能
+        // 体现峰谷,恰为 1 小时粒度时带宽收敛为 0(与均值线重合),属可接受的降级。
         let rows = sqlx::query!(
             r#"SELECT (hour_ts / ?1) * ?1 as "t!: i64",
                       AVG(cpu_avg) as "cpu!: f64",
                       AVG(mem_used_avg) as "mem_used!: f64", MAX(mem_total_max) as "mem_total!: i64",
                       AVG(net_rx_avg) as "rx!: f64", AVG(net_tx_avg) as "tx!: f64",
                       AVG(disk_read_avg) as "dr!: f64", AVG(disk_write_avg) as "dw!: f64",
-                      AVG(load1_avg) as "load1!: f64"
+                      AVG(load1_avg) as "load1!: f64",
+                      MAX(cpu_max) as "cpu_max!: f64",
+                      MAX(net_rx_avg) as "rx_max!: f64", MAX(net_tx_avg) as "tx_max!: f64",
+                      MAX(disk_read_avg) as "dr_max!: f64", MAX(disk_write_avg) as "dw_max!: f64",
+                      MAX(load1_avg) as "load1_max!: f64"
                FROM metrics_rollup WHERE node_id = ?2 AND hour_ts >= ?3
                GROUP BY 1 ORDER BY 1"#,
             bstep,
@@ -434,7 +442,12 @@ pub async fn history(
         .fetch_all(&st.db)
         .await?;
         rows.into_iter()
-            .map(|r| json!([r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1]))
+            .map(|r| {
+                json!([
+                    r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1,
+                    r.cpu_max, r.rx_max, r.tx_max, r.dr_max, r.dw_max, r.load1_max
+                ])
+            })
             .collect()
     } else {
         let rows = sqlx::query!(
@@ -443,7 +456,11 @@ pub async fn history(
                       AVG(mem_used) as "mem_used!: f64", MAX(mem_total) as "mem_total!: i64",
                       AVG(net_rx_bps) as "rx!: f64", AVG(net_tx_bps) as "tx!: f64",
                       AVG(disk_read_bps) as "dr!: f64", AVG(disk_write_bps) as "dw!: f64",
-                      AVG(load1) as "load1!: f64"
+                      AVG(load1) as "load1!: f64",
+                      MAX(cpu_pct) as "cpu_max!: f64",
+                      MAX(net_rx_bps) as "rx_max!: i64", MAX(net_tx_bps) as "tx_max!: i64",
+                      MAX(disk_read_bps) as "dr_max!: i64", MAX(disk_write_bps) as "dw_max!: i64",
+                      MAX(load1) as "load1_max!: f64"
                FROM metrics WHERE node_id = ?2 AND ts >= ?3
                GROUP BY 1 ORDER BY 1"#,
             step,
@@ -453,7 +470,12 @@ pub async fn history(
         .fetch_all(&st.db)
         .await?;
         rows.into_iter()
-            .map(|r| json!([r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1]))
+            .map(|r| {
+                json!([
+                    r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1,
+                    r.cpu_max, r.rx_max, r.tx_max, r.dr_max, r.dw_max, r.load1_max
+                ])
+            })
             .collect()
     };
     Ok(Json(json!({ "step": step, "points": points })))

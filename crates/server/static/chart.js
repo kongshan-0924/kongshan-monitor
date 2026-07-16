@@ -69,7 +69,10 @@ function opChart(container, opts) {
 
   const ctx = canvas.getContext("2d");
   let ts = [], data = series.map(() => []);
+  let bands = null;   // 每序列可选的"桶内峰值"数组(与 data 平行),画均值~峰值半透明带
+  let gapStep = 0;    // 数据聚合步长(秒);相邻点间隔明显大于它 → 视为离线空档:断线+底纹
   let hoverX = -1;
+  const isGap = (i) => i > 0 && gapStep > 0 && ts[i] - ts[i - 1] > gapStep * 2.5;
 
   function cssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -85,7 +88,13 @@ function opChart(container, opts) {
       const sw = el("span", "sw");
       sw.style.background = cs[i];
       item.appendChild(sw);
-      item.appendChild(el("span", null, s.label));
+      // 常驻当前值读数:不悬停也能直接看到"现在是多少"
+      const arr = data[i] || [];
+      let last = null;
+      for (let k = arr.length - 1; k >= 0; k--) {
+        if (arr[k] != null) { last = arr[k]; break; }
+      }
+      item.appendChild(el("span", null, s.label + (last == null ? "" : " · " + yFmt(last))));
       legend.appendChild(item);
     });
   }
@@ -124,6 +133,8 @@ function opChart(container, opts) {
     let lo = 0, hi = yMax || 0;
     if (!yMax) {
       for (const arr of data) for (const v of arr) if (v != null && v > hi) hi = v;
+      // 峰值带的上缘也要纳入量程,否则带体会被裁掉
+      if (bands) for (const arr of bands) { if (arr) for (const v of arr) if (v != null && v > hi) hi = v; }
       if (hi <= 0) hi = 1;
       hi *= 1.12;
     }
@@ -162,14 +173,58 @@ function opChart(container, opts) {
       ctx.fillText(label, xOf(t), H - 6);
     }
 
-    // 序列:按连续无 null 的"段"分别绘制(可平滑曲线/可选数据点,各段各自补面)
+    // 离线/缺数空档:相邻点间隔明显大于聚合步长 → 淡色底纹标出(线在下方序列绘制处断开),
+    // 不再用一条直线"假装"这段时间有数据。
+    if (gapStep > 0) {
+      ctx.fillStyle = mutedCol;
+      ctx.globalAlpha = 0.07;
+      for (let i = 1; i < ts.length; i++) {
+        if (isGap(i)) {
+          const x1 = xOf(ts[i - 1]), x2 = xOf(ts[i]);
+          ctx.fillRect(x1, padT, x2 - x1, ih);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 序列:按连续无 null 的"段"分别绘制(可平滑曲线/可选数据点,各段各自补面);
+    // 空档处(isGap)同样断段。
     const cs = colors();
     series.forEach((s, si) => {
       const arr = data[si];
+      // 峰值带:均值线与桶内峰值之间的半透明区域,让被 AVG 抹平的尖峰仍然可见
+      const bd = bands && bands[si];
+      if (bd) {
+        const bruns = [];
+        let bc = [];
+        for (let i = 0; i < ts.length; i++) {
+          const v = arr[i], m = bd[i];
+          if (v == null || m == null || isGap(i)) {
+            if (bc.length) bruns.push(bc);
+            bc = [];
+            if (v == null || m == null) continue;
+          }
+          bc.push({ x: xOf(ts[i]), ya: yOf(Math.min(v, hi)), ym: yOf(Math.min(m, hi)) });
+        }
+        if (bc.length) bruns.push(bc);
+        ctx.fillStyle = cs[si];
+        ctx.globalAlpha = 0.13;
+        for (const run of bruns) {
+          if (run.length < 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(run[0].x, run[0].ym);
+          for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].ym);
+          for (let i = run.length - 1; i >= 0; i--) ctx.lineTo(run[i].x, run[i].ya);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
       const runs = [];
       let cur = [];
       for (let i = 0; i < ts.length; i++) {
         const v = arr[i];
+        if (isGap(i) && cur.length) { runs.push(cur); cur = []; }
         if (v == null) { if (cur.length) runs.push(cur); cur = []; continue; }
         cur.push({ x: xOf(ts[i]), y: yOf(Math.min(v, hi)) });
       }
@@ -229,7 +284,10 @@ function opChart(container, opts) {
       tip.appendChild(el("div", "subtle", fmtTime(ts[idx])));
       series.forEach((s, si) => {
         const v = data[si][idx];
-        tip.appendChild(el("div", null, s.label + ": " + (v == null ? "-" : yFmt(v))));
+        // 有峰值带且该桶峰值高于均值时,提示里一并给出(尖峰的精确值)
+        const m = bands && bands[si] ? bands[si][idx] : null;
+        const peak = v != null && m != null && m > v ? "(峰 " + yFmt(m) + ")" : "";
+        tip.appendChild(el("div", null, s.label + ": " + (v == null ? "-" : yFmt(v)) + peak));
       });
       tip.style.display = "block";
       const tw = tip.offsetWidth;
@@ -246,6 +304,17 @@ function opChart(container, opts) {
     draw();
   });
   canvas.addEventListener("mouseleave", () => { hoverX = -1; draw(); });
+  // 触屏取值:跟随手指显示十字线与数值(passive,不阻碍页面滚动);抬手后读数保留,
+  // 便于看清。此前只有 mousemove,手机上完全无法取值。
+  const touchAt = (e) => {
+    const t = e.touches && e.touches[0];
+    if (!t) return;
+    const r = canvas.getBoundingClientRect();
+    hoverX = t.clientX - r.left;
+    draw();
+  };
+  canvas.addEventListener("touchstart", touchAt, { passive: true });
+  canvas.addEventListener("touchmove", touchAt, { passive: true });
 
   const ro = new ResizeObserver(draw);
   ro.observe(container);
@@ -254,15 +323,28 @@ function opChart(container, opts) {
   document.addEventListener("op-theme", onTheme);
 
   const controller = {
-    setData(newTs, newData) { ts = newTs; data = newData; draw(); },
+    /* newBands:与 series 平行的峰值数组(可省略);newGapStep:聚合步长秒(可省略,
+       供空档断线/底纹判定)。旧调用 setData(ts, data) 不受影响。 */
+    setData(newTs, newData, newBands, newGapStep) {
+      ts = newTs;
+      data = newData;
+      bands = newBands || null;
+      gapStep = newGapStep || 0;
+      rebuildLegend(); // 图例含当前值读数,随数据刷新
+      draw();
+    },
     append(t, values, maxPoints) {
       ts.push(t);
       values.forEach((v, i) => data[i] && data[i].push(v));
+      // 实时点即瞬时值,峰=值:带宽收敛为 0,与历史段的峰值带自然衔接
+      if (bands) values.forEach((v, i) => bands[i] && bands[i].push(v));
       const cap = maxPoints || 720;
       if (ts.length > cap) {
         ts.splice(0, ts.length - cap);
         data.forEach((a) => a.splice(0, a.length - cap));
+        if (bands) bands.forEach((a) => a && a.splice(0, a.length - cap));
       }
+      rebuildLegend();
       draw();
     },
     draw, // 供全局展示选项切换时统一重绘

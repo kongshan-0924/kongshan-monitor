@@ -268,15 +268,21 @@ function buildCharts() {
 async function loadHistory() {
   const h = await api("GET", "/api/nodes/" + NODE_ID + "/metrics?secs=" + curSecs);
   const ts = [], cpu = [], mem = [], rx = [], tx = [], dr = [], dw = [], l1 = [];
+  // 下标 9..14:每桶峰值(旧服务端没有则为 undefined → 归一成 null,不画带)
+  const cM = [], rxM = [], txM = [], drM = [], dwM = [], l1M = [];
+  const nn = (v) => (v == null ? null : v);
   for (const p of h.points) {
     ts.push(p[0]); cpu.push(p[1]); mem.push(p[2]);
     rx.push(p[4]); tx.push(p[5]); dr.push(p[6]); dw.push(p[7]); l1.push(p[8]);
+    cM.push(nn(p[9])); rxM.push(nn(p[10])); txM.push(nn(p[11]));
+    drM.push(nn(p[12])); dwM.push(nn(p[13])); l1M.push(nn(p[14]));
   }
-  charts.cpu.setData(ts, [cpu]);
-  charts.mem.setData(ts, [mem]);
-  charts.net.setData(ts, [rx, tx]);
-  charts.io.setData(ts, [dr, dw]);
-  charts.load.setData(ts, [l1]);
+  const step = h.step || 0; // 供空档断线/底纹判定
+  charts.cpu.setData(ts, [cpu], [cM], step);
+  charts.mem.setData(ts, [mem], null, step);
+  charts.net.setData(ts, [rx, tx], [rxM, txM], step);
+  charts.io.setData(ts, [dr, dw], [drM, dwM], step);
+  charts.load.setData(ts, [l1], [l1M], step);
 }
 
 async function loadDetail() {

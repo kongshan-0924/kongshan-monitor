@@ -210,8 +210,8 @@ async function loadTrend() {
       mem: opChart($("#trendMem"), { series: [{ label: "已用", colorVar: "--chart2", fill: true }, { label: "总量", colorVar: "--chart3" }], yFmt: fmtBytes }),
     };
   }
-  TREND.cpu.setData(ts, [cpu]);
-  TREND.mem.setData(ts, [mu, mt]);
+  TREND.cpu.setData(ts, [cpu], null, d.step || 0);
+  TREND.mem.setData(ts, [mu, mt], null, d.step || 0);
 }
 
 async function load() {
