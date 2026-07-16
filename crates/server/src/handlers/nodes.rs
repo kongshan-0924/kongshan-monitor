@@ -357,8 +357,10 @@ pub async fn detail(
     })))
 }
 
-/// GET /api/overview/trend?secs=3600 — 全体节点汇总趋势
-/// (每桶:CPU 跨节点均值、内存跨节点合计)。近期查原始表,>2 天查聚合表。
+/// GET /api/overview/trend?secs=3600 — 全体节点汇总趋势。近期查原始表,>2 天查聚合表。
+/// 每桶点位(下标固定,前端按模块取用):
+///   0=t 1=cpu(跨节点均值) 2=mem_used 3=mem_total 4=net_rx 5=net_tx 6=disk_read
+///   7=disk_write 8=load1(均值) 9=disk_used 10=disk_total 11=swap_used(其余为跨节点合计)。
 pub async fn overview_trend(
     State(st): State<AppState>,
     _user: SessionUser,
@@ -367,14 +369,25 @@ pub async fn overview_trend(
     let secs = q.secs.clamp(300, 366 * 86400);
     let since = unix_now().saturating_sub(secs);
     let step = (secs / 240).max(1);
-    // 先按 (桶, 节点) 归一,再跨节点聚合,避免同节点桶内多点导致内存被重复累加
+    // 先按 (桶, 节点) 归一,再跨节点聚合(CPU/负载取均值,其余取合计),
+    // 避免同节点桶内多点导致合计被重复累加。
     let points: Vec<Value> = if secs > 2 * 86400 {
         let bstep = step.max(3600);
         let rows = sqlx::query!(
             r#"SELECT t as "t!: i64", AVG(cpu) as "cpu!: f64",
-                      SUM(mu) as "mem_used!: f64", SUM(mt) as "mem_total!: f64"
+                      SUM(mu) as "mem_used!: f64", SUM(mt) as "mem_total!: f64",
+                      SUM(rx) as "rx!: f64", SUM(tx) as "tx!: f64",
+                      SUM(dr) as "dr!: f64", SUM(dw) as "dw!: f64",
+                      AVG(l1) as "load1!: f64",
+                      SUM(du) as "disk_used!: f64", SUM(dt) as "disk_total!: f64",
+                      SUM(su) as "swap_used!: f64"
                FROM (SELECT (hour_ts / ?1) * ?1 AS t, node_id,
-                            AVG(cpu_avg) AS cpu, AVG(mem_used_avg) AS mu, MAX(mem_total_max) AS mt
+                            AVG(cpu_avg) AS cpu, AVG(mem_used_avg) AS mu, MAX(mem_total_max) AS mt,
+                            AVG(net_rx_avg) AS rx, AVG(net_tx_avg) AS tx,
+                            AVG(disk_read_avg) AS dr, AVG(disk_write_avg) AS dw,
+                            AVG(load1_avg) AS l1,
+                            AVG(disk_used_avg) AS du, MAX(disk_total_max) AS dt,
+                            AVG(swap_used_avg) AS su
                      FROM metrics_rollup WHERE hour_ts >= ?2 GROUP BY t, node_id)
                GROUP BY t ORDER BY t"#,
             bstep,
@@ -382,13 +395,30 @@ pub async fn overview_trend(
         )
         .fetch_all(&st.db)
         .await?;
-        rows.into_iter().map(|r| json!([r.t, r.cpu, r.mem_used, r.mem_total])).collect()
+        rows.into_iter()
+            .map(|r| {
+                json!([
+                    r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1,
+                    r.disk_used, r.disk_total, r.swap_used
+                ])
+            })
+            .collect()
     } else {
         let rows = sqlx::query!(
             r#"SELECT t as "t!: i64", AVG(cpu) as "cpu!: f64",
-                      SUM(mu) as "mem_used!: f64", SUM(mt) as "mem_total!: f64"
+                      SUM(mu) as "mem_used!: f64", SUM(mt) as "mem_total!: f64",
+                      SUM(rx) as "rx!: f64", SUM(tx) as "tx!: f64",
+                      SUM(dr) as "dr!: f64", SUM(dw) as "dw!: f64",
+                      AVG(l1) as "load1!: f64",
+                      SUM(du) as "disk_used!: f64", SUM(dt) as "disk_total!: f64",
+                      SUM(su) as "swap_used!: f64"
                FROM (SELECT (ts / ?1) * ?1 AS t, node_id,
-                            AVG(cpu_pct) AS cpu, AVG(mem_used) AS mu, MAX(mem_total) AS mt
+                            AVG(cpu_pct) AS cpu, AVG(mem_used) AS mu, MAX(mem_total) AS mt,
+                            AVG(net_rx_bps) AS rx, AVG(net_tx_bps) AS tx,
+                            AVG(disk_read_bps) AS dr, AVG(disk_write_bps) AS dw,
+                            AVG(load1) AS l1,
+                            AVG(disk_used) AS du, MAX(disk_total) AS dt,
+                            AVG(swap_used) AS su
                      FROM metrics WHERE ts >= ?2 GROUP BY t, node_id)
                GROUP BY t ORDER BY t"#,
             step,
@@ -396,7 +426,14 @@ pub async fn overview_trend(
         )
         .fetch_all(&st.db)
         .await?;
-        rows.into_iter().map(|r| json!([r.t, r.cpu, r.mem_used, r.mem_total])).collect()
+        rows.into_iter()
+            .map(|r| {
+                json!([
+                    r.t, r.cpu, r.mem_used, r.mem_total, r.rx, r.tx, r.dr, r.dw, r.load1,
+                    r.disk_used, r.disk_total, r.swap_used
+                ])
+            })
+            .collect()
     };
     Ok(Json(json!({ "step": step, "points": points })))
 }

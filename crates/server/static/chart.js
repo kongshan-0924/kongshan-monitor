@@ -55,10 +55,32 @@ function drawCurve(ctx, pts, smooth) {
   }
 }
 
+/* 把原始秒步长吸附到"整"的时间刻度,让 X 轴落在整点/整 5·15·30 分/整天上。 */
+const TIME_STEPS = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400,
+  2 * 86400, 7 * 86400, 14 * 86400, 30 * 86400];
+function niceTimeStep(sec) {
+  for (const s of TIME_STEPS) if (sec <= s) return s;
+  return TIME_STEPS[TIME_STEPS.length - 1];
+}
+/* CSS 颜色(#rgb/#rrggbb/rgb())→ 带 alpha 的 rgba,用于面积渐变填充;识别不了则原样返回。 */
+function withAlpha(c, a) {
+  c = (c || "").trim();
+  if (c[0] === "#") {
+    let h = c.slice(1);
+    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
+    const n = parseInt(h, 16);
+    if (!Number.isNaN(n)) return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+  }
+  const m = c.match(/rgba?\(([^)]+)\)/);
+  if (m) { const p = m[1].split(",").map((x) => x.trim()); return "rgba(" + p[0] + "," + p[1] + "," + p[2] + "," + a + ")"; }
+  return c;
+}
+
 function opChart(container, opts) {
   const series = opts.series; // [{label, colorVar, fill}]
   const yFmt = opts.yFmt || ((v) => String(Math.round(v)));
   const yMax = opts.yMax; // 可选固定上限(如 CPU 100)
+  let thresholds = opts.thresholds || []; // [{value, label?}] 告警阈值横虚线(可后设)
 
   const canvas = document.createElement("canvas");
   container.appendChild(canvas);
@@ -71,6 +93,7 @@ function opChart(container, opts) {
   let ts = [], data = series.map(() => []);
   let bands = null;   // 每序列可选的"桶内峰值"数组(与 data 平行),画均值~峰值半透明带
   let gapStep = 0;    // 数据聚合步长(秒);相邻点间隔明显大于它 → 视为离线空档:断线+底纹
+  const hidden = series.map(() => false); // 图例点击隐藏的序列(不参与绘制/量程)
   let hoverX = -1;
   const isGap = (i) => i > 0 && gapStep > 0 && ts[i] - ts[i - 1] > gapStep * 2.5;
 
@@ -84,7 +107,7 @@ function opChart(container, opts) {
     legend.replaceChildren();
     const cs = colors();
     series.forEach((s, i) => {
-      const item = el("span", "lg");
+      const item = el("span", "lg" + (hidden[i] ? " off" : ""));
       const sw = el("span", "sw");
       sw.style.background = cs[i];
       item.appendChild(sw);
@@ -95,6 +118,14 @@ function opChart(container, opts) {
         if (arr[k] != null) { last = arr[k]; break; }
       }
       item.appendChild(el("span", null, s.label + (last == null ? "" : " · " + yFmt(last))));
+      // 点击图例项:切换该序列显隐(多序列图里单独看某一条)
+      if (series.length > 1) {
+        item.style.cursor = "pointer";
+        item.setAttribute("role", "button");
+        item.setAttribute("aria-pressed", hidden[i] ? "true" : "false");
+        item.title = hidden[i] ? "点击显示" : "点击隐藏";
+        item.addEventListener("click", () => { hidden[i] = !hidden[i]; rebuildLegend(); draw(); });
+      }
       legend.appendChild(item);
     });
   }
@@ -132,9 +163,11 @@ function opChart(container, opts) {
 
     let lo = 0, hi = yMax || 0;
     if (!yMax) {
-      for (const arr of data) for (const v of arr) if (v != null && v > hi) hi = v;
-      // 峰值带的上缘也要纳入量程,否则带体会被裁掉
-      if (bands) for (const arr of bands) { if (arr) for (const v of arr) if (v != null && v > hi) hi = v; }
+      data.forEach((arr, si) => { if (!hidden[si]) for (const v of arr) if (v != null && v > hi) hi = v; });
+      // 峰值带的上缘也要纳入量程,否则带体会被裁掉(隐藏的序列不计)
+      if (bands) bands.forEach((arr, si) => { if (arr && !hidden[si]) for (const v of arr) if (v != null && v > hi) hi = v; });
+      // 阈值线也纳入量程,保证虚线在可见范围内
+      for (const th of thresholds) if (th && th.value != null && th.value > hi) hi = th.value;
       if (hi <= 0) hi = 1;
       hi *= 1.12;
     }
@@ -161,13 +194,35 @@ function opChart(container, opts) {
       ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
       ctx.fillText(yFmt(v), padL - 6, y + 3.5);
     }
-    // X 时间刻度
+    // 告警阈值虚线:命中即将告警的水平参考线(仅当图表 y 单位与规则一致时由调用方传入)
+    if (thresholds.length) {
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.2;
+      const thCol = cssVar("--bad") || "#c96a5e";
+      ctx.strokeStyle = thCol;
+      ctx.fillStyle = thCol;
+      ctx.textAlign = "left";
+      for (const th of thresholds) {
+        if (th == null || th.value == null) continue;
+        const y = yOf(th.value);
+        if (y < padT || y > padT + ih) continue;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+        if (th.label) ctx.fillText(th.label, padL + 4, y - 3);
+      }
+      ctx.restore();
+    }
+    // X 时间刻度:对齐到"整"的时间边界(整点 / 整 5·15·30 分 / 整天),不再出现 13:07 这种怪刻度
     ctx.textAlign = "center";
-    const nx = Math.max(2, Math.floor(iw / 90));
-    for (let i = 0; i <= nx; i++) {
-      const t = t0 + (tr * i) / nx;
+    const dayScale = tr > 86400 * 2;
+    const niceT = niceTimeStep(tr / Math.max(2, Math.floor(iw / 90)));
+    const tzOff = new Date().getTimezoneOffset() * 60; // 秒;对齐到本地时区边界
+    let lk = Math.ceil((t0 - tzOff) / niceT) * niceT; // 首个 >= t0 的本地整边界(本地秒)
+    for (; lk + tzOff <= t1 + 1e-6; lk += niceT) {
+      const t = lk + tzOff;
+      if (t < t0) continue;
       const d = new Date(t * 1000);
-      const label = tr > 86400 * 2
+      const label = dayScale
         ? (d.getMonth() + 1) + "/" + d.getDate()
         : String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
       ctx.fillText(label, xOf(t), H - 6);
@@ -191,6 +246,7 @@ function opChart(container, opts) {
     // 空档处(isGap)同样断段。
     const cs = colors();
     series.forEach((s, si) => {
+      if (hidden[si]) return; // 图例点击隐藏的序列不绘制
       const arr = data[si];
       // 峰值带:均值线与桶内峰值之间的半透明区域,让被 AVG 抹平的尖峰仍然可见
       const bd = bands && bands[si];
@@ -242,10 +298,12 @@ function opChart(container, opts) {
           ctx.lineTo(run[run.length - 1].x, yOf(lo));
           ctx.lineTo(run[0].x, yOf(lo));
           ctx.closePath();
-          ctx.globalAlpha = 0.12;
-          ctx.fillStyle = cs[si];
+          // 垂直渐变填充:近曲线处较实、向底部渐隐,比纯色平铺更有层次(五套主题通用)
+          const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
+          grad.addColorStop(0, withAlpha(cs[si], 0.26));
+          grad.addColorStop(1, withAlpha(cs[si], 0.02));
+          ctx.fillStyle = grad;
           ctx.fill();
-          ctx.globalAlpha = 1;
         }
       }
       if (CHART_PREFS.dots) {
@@ -273,6 +331,7 @@ function opChart(container, opts) {
       ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ih); ctx.stroke();
       ctx.setLineDash([]);
       series.forEach((s, si) => {
+        if (hidden[si]) return;
         const v = data[si][idx];
         if (v == null) return;
         ctx.beginPath();
@@ -283,6 +342,7 @@ function opChart(container, opts) {
       tip.replaceChildren();
       tip.appendChild(el("div", "subtle", fmtTime(ts[idx])));
       series.forEach((s, si) => {
+        if (hidden[si]) return; // 隐藏的序列不进提示
         const v = data[si][idx];
         // 有峰值带且该桶峰值高于均值时,提示里一并给出(尖峰的精确值)
         const m = bands && bands[si] ? bands[si][idx] : null;
@@ -347,6 +407,7 @@ function opChart(container, opts) {
       rebuildLegend();
       draw();
     },
+    setThresholds(list) { thresholds = list || []; draw(); }, // 告警阈值虚线(异步取到规则后设置)
     draw, // 供全局展示选项切换时统一重绘
     /* 释放图表:断开 ResizeObserver、移除主题监听、从 ALL_CHARTS 摘除、清 DOM。
        反复重建图的页面(如对比页)必须在重建前调用,否则观察者/监听器/闭包会持续泄漏(F2)。 */

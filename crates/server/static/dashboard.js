@@ -193,25 +193,62 @@ function patchNode(id) {
   if (n && old) old.replaceWith(renderCard(n));
 }
 
-let TREND = null;
+/* 全局趋势可选模块。cols = /api/overview/trend 点位里取用的下标(见接口注释:
+   0=t 1=cpu 2=mem_used 3=mem_total 4=rx 5=tx 6=dr 7=dw 8=load1 9=disk_used 10=disk_total 11=swap_used)。 */
+const TREND_MODULES = [
+  { id: "cpu",  name: "平均 CPU",  title: "平均 CPU 使用率",         cols: [1],     opts: { series: [{ label: "平均 CPU %", colorVar: "--chart1", fill: true }], yFmt: (v) => v.toFixed(0) + "%", yMax: 100 } },
+  { id: "mem",  name: "内存",      title: "内存合计(已用 / 总量)",  cols: [2, 3],  opts: { series: [{ label: "已用", colorVar: "--chart2", fill: true }, { label: "总量", colorVar: "--chart3" }], yFmt: fmtBytes } },
+  { id: "net",  name: "网络吞吐",  title: "网络吞吐合计(下 / 上)",  cols: [4, 5],  opts: { series: [{ label: "下行", colorVar: "--chart1", fill: true }, { label: "上行", colorVar: "--chart3" }], yFmt: fmtBps } },
+  { id: "io",   name: "磁盘 I/O",  title: "磁盘 I/O 合计(读 / 写)", cols: [6, 7],  opts: { series: [{ label: "读", colorVar: "--chart2", fill: true }, { label: "写", colorVar: "--chart4" }], yFmt: fmtBps } },
+  { id: "load", name: "平均负载",  title: "平均负载(load1)",        cols: [8],     opts: { series: [{ label: "平均 load1", colorVar: "--chart1", fill: true }], yFmt: (v) => v.toFixed(2) } },
+  { id: "disk", name: "磁盘使用",  title: "磁盘合计(已用 / 总量)",  cols: [9, 10], opts: { series: [{ label: "已用", colorVar: "--chart2", fill: true }, { label: "总量", colorVar: "--chart3" }], yFmt: fmtBytes } },
+  { id: "swap", name: "Swap",      title: "Swap 合计(已用)",        cols: [11],    opts: { series: [{ label: "Swap 已用", colorVar: "--chart4", fill: true }], yFmt: fmtBytes } },
+];
+const TREND_DEFAULT = ["cpu", "mem"]; // 默认与改版前一致,老用户不受影响
+function trendMods() {
+  try { const v = JSON.parse(localStorage.getItem("op-trend-mods") || "null"); if (Array.isArray(v) && v.length) return v; } catch (_) {}
+  return TREND_DEFAULT.slice();
+}
+let TREND = {};      // 已建图表:模块 id -> controller
+let TREND_KEY = "";  // 当前已渲染的模块组合,变化时才重建 DOM/图表
+
+function rebuildTrendGrid(modIds) {
+  const grid = $("#trendGrid");
+  if (!grid) return;
+  Object.values(TREND).forEach((c) => c && c.destroy && c.destroy()); // 释放旧图表
+  TREND = {};
+  grid.replaceChildren();
+  for (const id of modIds) {
+    const mod = TREND_MODULES.find((m) => m.id === id);
+    if (!mod) continue;
+    const cardEl = el("div", "chart-card");
+    cardEl.appendChild(el("h4", null, mod.title));
+    const chartEl = el("div", "chart");
+    cardEl.appendChild(chartEl);
+    grid.appendChild(cardEl);
+    TREND[id] = opChart(chartEl, mod.opts);
+  }
+  TREND_KEY = modIds.join(",");
+}
+
 async function loadTrend() {
   const card = $("#trendCard");
   if (!card) return;
   card.classList.toggle("hidden", NODES.size === 0);
   if (NODES.size === 0) return;
+  const mods = trendMods();
+  if (mods.join(",") !== TREND_KEY) rebuildTrendGrid(mods);
   const secs = parseInt($("#trendRange").value, 10) || 86400;
   let d;
   try { d = await api("GET", "/api/overview/trend?secs=" + secs); } catch (_) { return; }
-  const ts = [], cpu = [], mu = [], mt = [];
-  for (const p of d.points) { ts.push(p[0]); cpu.push(p[1]); mu.push(p[2]); mt.push(p[3]); }
-  if (!TREND) {
-    TREND = {
-      cpu: opChart($("#trendCpu"), { series: [{ label: "平均 CPU %", colorVar: "--chart1", fill: true }], yFmt: (v) => v.toFixed(0) + "%", yMax: 100 }),
-      mem: opChart($("#trendMem"), { series: [{ label: "已用", colorVar: "--chart2", fill: true }, { label: "总量", colorVar: "--chart3" }], yFmt: fmtBytes }),
-    };
+  const ts = d.points.map((p) => p[0]);
+  const step = d.step || 0;
+  for (const id of mods) {
+    const mod = TREND_MODULES.find((m) => m.id === id);
+    const chart = TREND[id];
+    if (!mod || !chart) continue;
+    chart.setData(ts, mod.cols.map((c) => d.points.map((p) => p[c])), null, step);
   }
-  TREND.cpu.setData(ts, [cpu], null, d.step || 0);
-  TREND.mem.setData(ts, [mu, mt], null, d.step || 0);
 }
 
 async function load() {
@@ -279,5 +316,32 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#customReset").addEventListener("click", () => {
     localStorage.removeItem("op-card-fields"); FIELDS = DEFAULT_FIELDS.slice();
     $$("#fieldList input").forEach((c) => { c.checked = DEFAULT_FIELDS.includes(c.value); });
+  });
+
+  // 全局趋势自定义:勾选要显示哪些趋势图
+  const tcb = $("#trendCustomBtn");
+  if (tcb) tcb.addEventListener("click", () => {
+    const list = $("#trendList"); list.replaceChildren();
+    const cur = trendMods();
+    for (const mod of TREND_MODULES) {
+      const lab = el("label", "chk");
+      const cb = el("input"); cb.type = "checkbox"; cb.value = mod.id; cb.checked = cur.includes(mod.id);
+      lab.appendChild(cb); lab.appendChild(el("span", null, " " + mod.name));
+      list.appendChild(lab);
+    }
+    $("#trendDlg").showModal();
+  });
+  const tform = $("#trendForm");
+  if (tform) tform.addEventListener("submit", (e) => {
+    if (e.submitter && e.submitter.value !== "ok") return;
+    const chosen = $$("#trendList input:checked").map((c) => c.value); // DOM 序 = 模块定义序
+    const mods = chosen.length ? chosen : TREND_DEFAULT.slice();
+    localStorage.setItem("op-trend-mods", JSON.stringify(mods));
+    loadTrend();
+  });
+  const treset = $("#trendReset");
+  if (treset) treset.addEventListener("click", () => {
+    localStorage.removeItem("op-trend-mods");
+    $$("#trendList input").forEach((c) => { c.checked = TREND_DEFAULT.includes(c.value); });
   });
 });

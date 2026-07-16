@@ -285,6 +285,26 @@ async function loadHistory() {
   charts.load.setData(ts, [l1], [l1M], step);
 }
 
+/* 把作用于本节点的告警规则画成阈值虚线——仅限 y 单位与图表一致的指标:
+   cpu_pct→CPU 图、load1→负载图(内存/磁盘图是字节、mem_pct/disk_pct 是百分比,无法对应,跳过)。
+   仅上/下阈值(gt/gte/lt/lte),变化率(roc)与离线无固定横线含义。 */
+async function loadThresholds() {
+  let d;
+  try { d = await api("GET", "/api/alerts/rules"); } catch (_) { return; }
+  const map = { cpu_pct: "cpu", load1: "load" };
+  const buckets = { cpu: [], load: [] };
+  for (const r of (d.items || [])) {
+    if (r.enabled === false) continue;
+    if (r.node_id != null && r.node_id !== NODE_ID) continue; // 全局或本节点
+    const chartId = map[r.metric];
+    if (!chartId) continue;
+    if (!["gt", "gte", "lt", "lte"].includes(r.comparator)) continue;
+    buckets[chartId].push({ value: r.threshold, label: r.name });
+  }
+  if (charts.cpu) charts.cpu.setThresholds(buckets.cpu);
+  if (charts.load) charts.load.setThresholds(buckets.load);
+}
+
 async function loadDetail() {
   const d = await api("GET", "/api/nodes/" + NODE_ID);
   nodeInfo = d.node;
@@ -313,6 +333,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadDetail();
     await loadHistory();
+    loadThresholds(); // 告警阈值虚线(失败不影响主流程)
   } catch (e) {
     if (e.status === 404) { location.href = "/"; return; }
   }

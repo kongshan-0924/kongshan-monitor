@@ -37,11 +37,9 @@
         <option value="604800">最近 7 天</option>
         <option value="2592000">最近 30 天</option>
       </select>
+      <button id="trendCustomBtn" class="btn ghost sm" style="margin-left:auto">自定义</button>
     </div>
-    <div class="charts2">
-      <div class="chart-card"><h4>平均 CPU 使用率</h4><div class="chart" id="trendCpu"></div></div>
-      <div class="chart-card"><h4>内存合计(已用 / 总量)</h4><div class="chart" id="trendMem"></div></div>
-    </div>
+    <div class="charts2" id="trendGrid"></div>
   </section>
 
   <div class="toolbar" id="toolbar">
@@ -73,6 +71,18 @@
     <div id="fieldList" class="chk-grid"></div>
     <div class="dlg-actions">
       <button id="customReset" type="button" class="btn ghost">恢复默认</button>
+      <button value="ok" class="btn primary" type="submit">完成</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="trendDlg" class="dlg">
+  <form method="dialog" class="dlg-body" id="trendForm">
+    <h3>自定义全局趋势</h3>
+    <p class="hint subtle">勾选全局趋势里要显示的图表(本地保存,仅影响你自己的浏览器)。</p>
+    <div id="trendList" class="chk-grid"></div>
+    <div class="dlg-actions">
+      <button id="trendReset" type="button" class="btn ghost">恢复默认</button>
       <button value="ok" class="btn primary" type="submit">完成</button>
     </div>
   </form>
